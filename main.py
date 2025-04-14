@@ -185,8 +185,15 @@ async def check_and_notify(app: Application, user_id: int, config: dict):
         if raw_html:
             jira_msgs = parse_jira_email(subject, raw_html)
 
-        if jira_msgs:
-            # Если парсер вернул список сообщений — отправим их все.
+        if jira_msgs is None:
+            # Не Jira -> дефолтная логика
+            await app.bot.send_message(
+                chat_id=user_id,
+                text=f"📩 Новое письмо от {from_}\n<b>Тема:</b> {subject}",
+                parse_mode='HTML'
+            )
+        elif len(jira_msgs) > 0:
+            # Jira, есть какие-то сообщения -> отправляем их все
             for message_text in jira_msgs:
                 await app.bot.send_message(
                     chat_id=user_id,
@@ -194,12 +201,9 @@ async def check_and_notify(app: Application, user_id: int, config: dict):
                     parse_mode="HTML"
                 )
         else:
-            # Иначе — дефолтная логика
-            await app.bot.send_message(
-                chat_id=user_id,
-                text=f"📩 Новое письмо от {from_}\n<b>Тема:</b> {subject}",
-                parse_mode='HTML'
-            )
+            # Jira, но уведомлять не о чем (пустой список)
+            # Просто пропускаем письмо, ничего не отправляем.
+            pass
 
         # Обновляем last_uid
         config["last_uid"] = uid
