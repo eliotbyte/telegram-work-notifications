@@ -8,7 +8,6 @@ DATA_DIR = "/app/data"
 USER_CONFIG_FILE = os.path.join(DATA_DIR, "user_config.json")
 
 # Глобальная структура user_configs: {str(user_id): {...}}
-# Но можно сделать singleton-объект или использовать что-то другое
 user_configs = {}
 
 
@@ -50,9 +49,9 @@ def ensure_user_config(user_id: int):
     uid_str = str(user_id)
     if uid_str not in user_configs:
         # При создании нового пользователя сразу прописываем,
-        # что все Jira-уведомления включены, кроме worklog.
+        # что все Jira-уведомления включены, кроме worklog,
+        # а уведомления по обычной почте — отключены (False).
         user_configs[uid_str] = {
-            # Новая структура почты
             "email": {
                 "value": None,
                 "password": None,
@@ -68,6 +67,7 @@ def ensure_user_config(user_id: int):
                     "mention_comment": True,
                     "worklog": False,
                 },
+                # Изначально False
                 "mail": False,
             },
             "last_uid": None,

@@ -9,19 +9,24 @@ from filters.jira_parser import parse_jira_email
 from telegram.helpers import escape_markdown
 
 async def check_mail_for_all_users(app):
+    """
+    Асинхронная проверка почты для всех пользователей.
+    Вызывается планировщиком.
+    """
+    logging.info("=== Запуск проверки почты для всех пользователей ===")
     tasks = []
     for user_id_str, config in user_configs.items():
         tasks.append(asyncio.create_task(check_and_notify(app, int(user_id_str), config)))
 
     if tasks:
         await asyncio.gather(*tasks)
+    logging.info("=== Завершён проход проверки почты ===")
+
 
 async def check_and_notify(app, user_id: int, config: dict):
     """
     Асинхронная проверка почты конкретного пользователя.
-    Учитываем новые поля в конфиге:
-      - notifications.mail (bool): посылать ли уведомления о письмах, которые не Jira
-      - notifications.jira[event_type] (bool): посылать ли уведомления о конкретном Jira-событии
+    Учитываем флаги «mail» и «jira[event_type]».
     """
     email_value = config["email"]["value"]
     password = config["email"]["password"]
@@ -38,7 +43,6 @@ async def check_and_notify(app, user_id: int, config: dict):
     last_check_time = datetime.fromisoformat(fromiso)
     now_dt = datetime.now()
 
-    # Если прошло больше 15 минут - смещаем
     if (now_dt - last_check_time) > timedelta(minutes=15):
         last_check_time = now_dt - timedelta(minutes=15)
 
@@ -46,6 +50,9 @@ async def check_and_notify(app, user_id: int, config: dict):
     last_uid = config.get("last_uid", None)
 
     def fetch_new_messages():
+        """
+        Синхронная работа с IMAP в отдельном потоке.
+        """
         result = []
         try:
             with IMAPClient(host, ssl=True) as client:
@@ -84,16 +91,15 @@ async def check_and_notify(app, user_id: int, config: dict):
 
     # Рассылаем уведомления
     for uid, subject, from_, raw_html in new_messages:
-        # Парсим Jira
-        jira_msgs = parse_jira_email(subject, raw_html)
-        # jira_msgs:
-        #   None -> не похоже на Jira
-        #   [] -> это Jira, но после фильтрации нет нужных событий
-        #   [строка, ...] -> список сообщений для отправки
+        # Разбираем Jira
+        # Чтобы учитывать включённые/выключенные типы Jira-событий —
+        # лучше передать allowed_event_types:
+        user_jira_conf = config["notifications"]["jira"]
+        allowed = {k for k, v in user_jira_conf.items() if v}
+        jira_msgs = parse_jira_email(subject, raw_html, allowed_event_types=allowed)
 
         if jira_msgs is None:
             # Обычное письмо
-            # Шлём уведомление ТОЛЬКО если включено notifications.mail
             if config["notifications"]["mail"]:
                 message_text = (
                     f"📩 Новое письмо от {escape_markdown(from_)}\n"
@@ -105,41 +111,15 @@ async def check_and_notify(app, user_id: int, config: dict):
                     parse_mode='Markdown'
                 )
         elif len(jira_msgs) > 0:
-            # Jira-события есть
-            # Но нужно «отфильтровать» события, если пользователь что-то отключил.
-            # Для этого нужно передавать allowed_event_types в parse_jira_email,
-            # а пока у нас нет прямого параметра. Можно «доходчиво» решить:
-            #   1) Парсим полностью
-            #   2) В тексте находим строки "✅ назначил(а)..." и т.д.
-            #      и выкидываем те, которые отключены.
-            # Для простоты – предполагаем, что parse_jira_email уже всё даёт "одним куском".
-            # Но если хотим более тонко – нужно дорабатывать сам парсер,
-            # или выдавать parse_jira_email(..., allowed_event_types).
-            # В задаче сказано: "при клике на кнопку пользователь включает/выключает" –
-            # значит логично использовать штатное API "allowed_event_types".
-            #
-            # Допустим, мы пишем:
-            pass_jira_msgs = []
-            for text_block in jira_msgs:
-                # Проверим, отключён ли там "worklog", "comment" и т.д.
-                # Но проще всего – мы в самом parse_jira_email можем передавать allowed_event_types,
-                # чтобы он возвращал None или пустой список для тех событий, которые отключены.
-                # Если упростить: будем отправлять всё, что пришло, полагая,
-                # что на этапе parse все ненужные события сами отсеялись (см. ниже).
-                pass_jira_msgs.append(text_block)
-
-            # Если получилось пусто – значит уведомлять не о чем
-            if len(pass_jira_msgs) == 0:
-                pass
-            else:
-                for message_text in pass_jira_msgs:
-                    await app.bot.send_message(
-                        chat_id=user_id,
-                        text=message_text,
-                        parse_mode="HTML"
-                    )
+            # Jira-события есть (и не отфильтрованы)
+            for message_text in jira_msgs:
+                await app.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="HTML"
+                )
         else:
-            # Jira, но нет интересующих событий
+            # Jira, но после фильтрации ничего не осталось
             pass
 
         # Обновляем last_uid

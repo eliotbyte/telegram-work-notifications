@@ -17,16 +17,24 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
 logging.basicConfig(level=logging.INFO)
 
+async def scheduled_mail_check(app):
+    """
+    Запуск асинхронной проверки почты (для планировщика).
+    """
+    await check_mail_for_all_users(app)
+
 async def post_init(application):
     """
     Запуск планировщика после инициализации бота.
     """
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler()
+    # Вместо lambda используем просто функцию scheduled_mail_check
     scheduler.add_job(
-        lambda: loop.create_task(check_mail_for_all_users(application)),
+        scheduled_mail_check,
         trigger='interval',
-        seconds=CHECK_INTERVAL
+        seconds=CHECK_INTERVAL,
+        kwargs={"app": application}
     )
     scheduler.start()
     logging.info("✅ Планировщик запущен")

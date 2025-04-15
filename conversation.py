@@ -49,28 +49,43 @@ def main_menu_keyboard(user_id: int):
 # Подменю "Настройки"
 def settings_menu_keyboard():
     """
-    Кнопка "Почта" и "Назад в главное меню", а также "Уведомления о письмах" (Jira / не-Jira).
-    Но в задаче было сказано "пока одна кнопка 'Почта'", но мы добавим и про "Mail notifications" / "Jira notifications".
+    Кнопка "Почта" и "Назад в главное меню".
     """
     buttons = [
         [InlineKeyboardButton("Почта", callback_data="mail_menu")],
-        [InlineKeyboardButton("Уведомления Jira", callback_data="jira_menu")],
-        [InlineKeyboardButton("Уведомления о письмах", callback_data="toggle_mail_notifications")],
         [InlineKeyboardButton("Назад", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)
 
 
 # Подменю "Почта"
-def mail_menu_keyboard(email_set: bool):
+def mail_menu_keyboard(user_id: int):
     """
-    Кнопка "Удалить" (если почта настроена),
-    Кнопка "Назад" -> в настройки.
+    В меню "Почта" теперь:
+      - "Удалить"
+      - "Уведомления Jira"
+      - "Уведомления о письмах [ДА/НЕТ]"
+      - "Назад"
     """
+    email_value, password, _ = get_email_credentials(user_id)
+    email_set = bool(email_value and password)
+    conf = get_notifications_config(user_id)
+
     buttons = []
     if email_set:
         buttons.append([InlineKeyboardButton("Удалить", callback_data="delete_email")])
+
+    # Кнопка "Уведомления Jira"
+    buttons.append([InlineKeyboardButton("Уведомления Jira", callback_data="jira_menu")])
+
+    # Кнопка "Уведомления о письмах [ДА/НЕТ]"
+    mail_on = conf["mail"]
+    mail_label = "Уведомления о письмах [ДА]" if mail_on else "Уведомления о письмах [НЕТ]"
+    buttons.append([InlineKeyboardButton(mail_label, callback_data="toggle_mail_notifications")])
+
+    # Кнопка "Назад" -> в настройки
     buttons.append([InlineKeyboardButton("Назад", callback_data="back_to_settings")])
+
     return InlineKeyboardMarkup(buttons)
 
 
@@ -88,24 +103,23 @@ def confirm_delete_keyboard():
 def jira_menu_keyboard(user_id: int):
     """
     Генерируем кнопки для каждого типа событий: "created", "assigned" и т.д.
-    Каждая кнопка -> toggle_<event_type>, текст + статус [ON]/[OFF].
+    Каждая кнопка -> toggle_<event_type>, текст + статус [ДА]/[НЕТ].
     """
     conf = get_notifications_config(user_id)
     jira_conf = conf["jira"]
 
     row_buttons = []
     for e_type, value in jira_conf.items():
-        label = f"{e_type} [{'ON' if value else 'OFF'}]"
+        # ДА/НЕТ вместо ON/OFF
+        label = f"{e_type} [{'ДА' if value else 'НЕТ'}]"
         row_buttons.append([InlineKeyboardButton(label, callback_data=f"toggle_jira_{e_type}")])
 
     # Добавляем кнопку "Назад"
-    row_buttons.append([InlineKeyboardButton("Назад", callback_data="back_to_settings")])
+    row_buttons.append([InlineKeyboardButton("Назад", callback_data="back_to_mail_menu")])
 
     return InlineKeyboardMarkup(row_buttons)
 
-
 # ---- Хэндлеры ----
-
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -138,7 +152,6 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`email@example.com пароль`\n\n"
             "Либо нажмите кнопку 'Помощь' для инструкции, или 'Отмена' чтобы вернуться."
         )
-        # Построим клавиатуру с кнопками "Помощь" и "Отмена"
         kb = [
             [
                 InlineKeyboardButton("Помощь", callback_data="help_email"),
@@ -169,7 +182,6 @@ async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_T
 
     email_value, password = parts
 
-    # Попробуем залогиниться (imap.yandex.ru)
     from imapclient import IMAPClient
     try:
         with IMAPClient("imap.yandex.ru", ssl=True) as client:
@@ -229,24 +241,8 @@ async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     if data == "mail_menu":
-        email_value, password, _ = get_email_credentials(user_id)
-        email_set = bool(email_value and password)
-        await query.message.reply_text("Настройки почты", reply_markup=mail_menu_keyboard(email_set))
+        await query.message.reply_text("Настройки почты", reply_markup=mail_menu_keyboard(user_id))
         return MAIL_MENU
-
-    elif data == "toggle_mail_notifications":
-        toggle_mail_notifications(user_id)
-        conf = get_notifications_config(user_id)
-        status = "ВКЛ" if conf["mail"] else "ВЫКЛ"
-        await query.message.reply_text(
-            f"Уведомления по обычным письмам: {status}",
-            reply_markup=settings_menu_keyboard()
-        )
-        return SETTINGS_MENU
-
-    elif data == "jira_menu":
-        await query.message.reply_text("Настройки Jira-уведомлений", reply_markup=jira_menu_keyboard(user_id))
-        return JIRA_MENU
 
     elif data == "back_to_main":
         # Возврат в главное меню
@@ -264,9 +260,24 @@ async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "delete_email":
-        # Спрашиваем подтверждение
         await query.message.reply_text("Вы действительно хотите удалить почту?", reply_markup=confirm_delete_keyboard())
         return CONFIRM_DELETE_EMAIL
+
+    elif data == "toggle_mail_notifications":
+        toggle_mail_notifications(user_id)
+        conf = get_notifications_config(user_id)
+        mail_on = conf["mail"]
+        status = "ДА" if mail_on else "НЕТ"
+        await query.message.reply_text(
+            f"Уведомления о письмах теперь: {status}",
+            reply_markup=mail_menu_keyboard(user_id)
+        )
+        return MAIL_MENU
+
+    elif data == "jira_menu":
+        await query.message.reply_text("Настройки Jira-уведомлений", reply_markup=jira_menu_keyboard(user_id))
+        return JIRA_MENU
+
     elif data == "back_to_settings":
         await query.message.reply_text("Настройки", reply_markup=settings_menu_keyboard())
         return SETTINGS_MENU
@@ -282,15 +293,11 @@ async def confirm_delete_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
 
     if data == "delete_yes":
-        # Удаляем
         clear_email_credentials(user_id)
         await query.message.reply_text("Почта удалена!", reply_markup=main_menu_keyboard(user_id))
         return MAIN_MENU
     elif data == "delete_no":
-        # Возврат в MAIL_MENU
-        email_value, password, _ = get_email_credentials(user_id)
-        email_set = bool(email_value and password)
-        await query.message.reply_text("Отмена удаления.", reply_markup=mail_menu_keyboard(email_set))
+        await query.message.reply_text("Отмена удаления.", reply_markup=mail_menu_keyboard(user_id))
         return MAIL_MENU
 
 
@@ -303,9 +310,9 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data == "back_to_settings":
-        await query.message.reply_text("Настройки", reply_markup=settings_menu_keyboard())
-        return SETTINGS_MENU
+    if data == "back_to_mail_menu":
+        await query.message.reply_text("Настройки почты", reply_markup=mail_menu_keyboard(user_id))
+        return MAIL_MENU
 
     if data.startswith("toggle_jira_"):
         e_type = data.replace("toggle_jira_", "")
@@ -313,19 +320,24 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_val = conf["jira"].get(e_type, False)
         set_jira_notification(user_id, e_type, not current_val)
 
-        # Перерисовываем клавиатуру
         await query.message.reply_text(
-            f"Переключили уведомление '{e_type}' -> {not current_val}",
+            f"Переключили '{e_type}' -> {not current_val}",
             reply_markup=jira_menu_keyboard(user_id)
         )
         return JIRA_MENU
 
 
-async def ignore_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def fallback_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    В основном меню (и в настройках), если пользователь шлёт текст – игнорируем/говорим "выберите кнопку".
+    Если пользователь написал что-то рандомное не в ADD_EMAIL,
+    то переводим его в главное меню.
     """
-    await update.message.reply_text("Пожалуйста, используйте кнопки меню.")
+    user_id = update.effective_user.id
+    await update.message.reply_text(
+        "Не понял команду. Возвращаюсь в главное меню.",
+        reply_markup=main_menu_keyboard(user_id)
+    )
+    return MAIN_MENU
 
 
 def build_conversation_handler():
@@ -337,25 +349,29 @@ def build_conversation_handler():
         states={
             MAIN_MENU: [
                 CallbackQueryHandler(main_menu_handler),
-                MessageHandler(filters.TEXT, ignore_text),
+                # Любой текст -> fallback
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
             ],
             ADD_EMAIL: [
+                # В ADD_EMAIL читаем текст как почта+пароль
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_email_handler_text),
                 CallbackQueryHandler(add_email_handler_callback, pattern="^help_email|cancel_add_email$"),
             ],
             SETTINGS_MENU: [
                 CallbackQueryHandler(settings_menu_handler),
-                MessageHandler(filters.TEXT, ignore_text),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
             ],
             MAIL_MENU: [
                 CallbackQueryHandler(mail_menu_handler),
-                MessageHandler(filters.TEXT, ignore_text),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
             ],
             CONFIRM_DELETE_EMAIL: [
                 CallbackQueryHandler(confirm_delete_handler),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
             ],
             JIRA_MENU: [
                 CallbackQueryHandler(jira_menu_handler),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
             ],
         },
         fallbacks=[
