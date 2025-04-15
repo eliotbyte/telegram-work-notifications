@@ -1,5 +1,6 @@
 import re
 from bs4 import BeautifulSoup
+from collections import defaultdict
 
 def parse_jira_email(
     subject: str, 
@@ -313,15 +314,17 @@ def parse_jira_email(
 
     # -------------------------------------------
     # 6) Формируем один итоговый текст
-    #    Порядок строк (пример из ТЗ):
-    #      1) assigned
-    #      2) created
-    #      3) update
-    #      4) comment
-    #      5) mention_description
-    #      6) mention_comment
-    #      7) worklog
-    #    В конце — ссылка на задачу
+    #    Теперь: 
+    #      - в начале пишем "[ключ] заголовок (ссылка)"
+    #      - далее группируем события по автору
+    #      - порядок событий (на уровень пользователя) сохраняем:
+    #        1) assigned
+    #        2) created
+    #        3) update
+    #        4) comment
+    #        5) mention_description
+    #        6) mention_comment
+    #        7) worklog
     # -------------------------------------------
     order = [
         "assigned",
@@ -333,31 +336,45 @@ def parse_jira_email(
         "worklog",
     ]
 
-    lines = []
+    # Собираем: автор -> список его событий (в нужном порядке)
+    author_events = defaultdict(list)
     for event_type in order:
-        authors = events[event_type]
-        if not authors:
-            continue
+        for author in sorted(events[event_type]):
+            author_events[author].append(event_type)
 
-        # На каждый уникальный author генерируем отдельную строчку
-        for author in sorted(authors):
-            if event_type == "assigned":
-                lines.append(f"✅ {author} назначил(а) вас исполнителем задачи")
-            elif event_type == "created":
-                lines.append(f"📌 {author} создал(а) задачу")
-            elif event_type == "update":
-                lines.append(f"✏️ {author} изменил(а) задачу")
-            elif event_type == "comment":
-                lines.append(f"💬 {author} оставил(а) комментарий")
-            elif event_type == "mention_description":
-                lines.append(f"👀 {author} упомянул(а) вас в задаче")
-            elif event_type == "mention_comment":
-                lines.append(f"👀 {author} упомянул(а) вас в комментариях")
-            elif event_type == "worklog":
-                lines.append(f"⏱️ {author} трекнул(а) время")
+    # Если ни у кого вообще нет событий, вернем пустой
+    if not author_events:
+        return []
 
-    # В самом конце — строка со ссылкой на задачу
-    lines.append(issue_link_text)
+    lines = []
+    # Сначала строка с задачей
+    lines.append(f"{issue_link_text}")
+    lines.append("")
+
+    # Затем по каждому автору (в порядке появления в author_events).
+    # Если нужно другое упорядочивание — можно использовать sorted(author_events), но тогда будет алфавит.
+    for author in author_events:
+        lines.append(f"{author}:")
+        for e_type in author_events[author]:
+            if e_type == "assigned":
+                lines.append("✅ назначил(а) вас исполнителем задачи")
+            elif e_type == "created":
+                lines.append("📌 создал(а) задачу")
+            elif e_type == "update":
+                lines.append("✏️ изменил(а) задачу")
+            elif e_type == "comment":
+                lines.append("💬 оставил(а) комментарий")
+            elif e_type == "mention_description":
+                lines.append("👀 упомянул(а) вас в задаче")
+            elif e_type == "mention_comment":
+                lines.append("👀 упомянул(а) вас в комментариях")
+            elif e_type == "worklog":
+                lines.append("⏱️ трекнул(а) время")
+        lines.append("")  # пустая строка между авторами
+
+    # Удаляем последнюю пустую строку
+    if lines and not lines[-1].strip():
+        lines.pop()
 
     final_message = "\n".join(lines)
     return [final_message]
