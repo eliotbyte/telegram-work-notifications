@@ -149,9 +149,13 @@ def parse_jira_email(
                     break
 
         if not assigned_author:
-            # fallback: может быть, что нет структуры "changes by", тогда
-            # принимаем, что это "кто-то" назначил
-            assigned_author = "Кто-то"
+            # Если не найден автор назначения, попробуем использовать автора, который создал задачу.
+            if events["created"]:
+                assigned_author = next(iter(events["created"]))
+            else:
+                # fallback: может быть, что нет структуры "changes by" и нет создателя, тогда
+                # принимаем, что это "кто-то" назначил
+                assigned_author = "Кто-то"
 
         events["assigned"].add(assigned_author)
 
