@@ -82,16 +82,14 @@ def parse_jira_email(subject: str, raw_html: str) -> list[str] | None:
         if not reporter:
             reporter = "Неизвестный репортёр"
 
-        single_msg = f"📌 {reporter} создала(а) задачу {link_text}"
+        single_msg = f"📌 {reporter} создал(а) задачу {link_text}"
         return [single_msg]
 
     # --- NEW LOGIC: Если письмо говорит только о worklog'ах (и ничего больше) — не уведомлять ---
     # Пример: "There are 2 worklogs." и нет других слов "update", "comment", "assigned", "created", "mention".
     # Считаем, что такое письмо бесполезно -> возвращаем пустой список, чтобы ничего не слать.
-    # Сначала проверим наличие "there are" и "worklog".
     if "there are" in body_text and "worklog" in body_text:
         # Проверяем, нет ли других ключевых слов (update, comment, mentioned, assign, created)
-        # Если нет — значит, это "чисто ворклоги".
         has_other_keywords = any(
             kw in body_text
             for kw in [
@@ -102,8 +100,6 @@ def parse_jira_email(subject: str, raw_html: str) -> list[str] | None:
         if not has_other_keywords:
             # только ворклоги -> пропускаем
             return []
-
-    # --- Старая логика ниже (немного подправлена в плане None/[]) ---
 
     parsed_messages = []
 
@@ -135,7 +131,7 @@ def parse_jira_email(subject: str, raw_html: str) -> list[str] | None:
             f"✅ {author} назначил(а) вас исполнителем задачи {link_text}"
         )
     else:
-        # Если всё же нас назначили, но апдейтов > 1 или авторов не нашли
+        # Если всё же нас назначили, но апдейтов > 1 или автора нет
         if assigned_to_you:
             parsed_messages.append(
                 f"✅ Вас назначили исполнителем задачи {link_text}"
@@ -168,6 +164,26 @@ def parse_jira_email(subject: str, raw_html: str) -> list[str] | None:
 
         parsed_messages.append(
             f"👀 {mention_author} упомянул(а) вас в задаче {link_text}"
+        )
+
+    # --- NEW LOGIC: один обычный комментарий (без упоминания нас) ---
+    # Триггер: "There is 1 comment" + отсутствие фразы о том, что нас упомянули.
+    if ("there is 1 comment" in body_text) and not you_were_mentioned:
+        # Пытаемся найти автора комментария в блоке "1 comment".
+        comment_author = None
+
+        # Ищем tr c классом, в котором может быть автор, например "group-header"
+        group_header = soup.find("tr", class_=re.compile(r"group-header"))
+        if group_header:
+            strong_tag = group_header.find("strong")
+            if strong_tag:
+                comment_author = strong_tag.get_text(strip=True)
+
+        if not comment_author:
+            comment_author = "Кто-то"
+
+        parsed_messages.append(
+            f"💬 {comment_author} оставил(а) комментарий к задаче {link_text}"
         )
 
     # Если мы что-то насобирали, вернём список. Если нет — вернём пустой
