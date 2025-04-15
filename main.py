@@ -8,6 +8,7 @@ from imapclient import IMAPClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.helpers import escape_markdown
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
@@ -187,10 +188,14 @@ async def check_and_notify(app: Application, user_id: int, config: dict):
 
         if jira_msgs is None:
             # Не Jira -> дефолтная логика
+            message_text = (
+                f"📩 Новое письмо от {escape_markdown(from_)}\n"
+                f"*Тема:* {escape_markdown(subject)}"
+            )
             await app.bot.send_message(
                 chat_id=user_id,
-                text=f"📩 Новое письмо от {from_}\n<b>Тема:</b> {subject}",
-                parse_mode='HTML'
+                text=message_text,
+                parse_mode='Markdown'
             )
         elif len(jira_msgs) > 0:
             # Jira, есть какие-то сообщения -> отправляем их все
