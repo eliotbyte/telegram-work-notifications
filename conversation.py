@@ -20,6 +20,8 @@ from config import (
     set_jira_notification,
     toggle_mail_notifications,
     get_notifications_config,
+    # [MOD]
+    toggle_quiet_notifications,
 )
 import logging
 
@@ -45,18 +47,21 @@ def main_menu_keyboard(user_id: int):
     markup = InlineKeyboardMarkup(buttons)
     return markup
 
-
 # Подменю "Настройки"
-def settings_menu_keyboard():
+def settings_menu_keyboard(user_id: int):
     """
-    Кнопка "Почта" и "Назад в главное меню".
+    Кнопка "Почта", "Тихие сообщения", "Назад в главное меню".
     """
+    conf = get_notifications_config(user_id)
+    quiet_on = conf.get("quiet_notifications", True)
+    quiet_label = f"Уведомлять только в рабочее время [{'ДА' if quiet_on else 'НЕТ'}]"
+
     buttons = [
         [InlineKeyboardButton("Почта", callback_data="mail_menu")],
+        [InlineKeyboardButton(quiet_label, callback_data="toggle_quiet_notifications")],
         [InlineKeyboardButton("Назад", callback_data="back_to_main")],
     ]
     return InlineKeyboardMarkup(buttons)
-
 
 # Подменю "Почта"
 def mail_menu_keyboard(user_id: int):
@@ -88,7 +93,6 @@ def mail_menu_keyboard(user_id: int):
 
     return InlineKeyboardMarkup(buttons)
 
-
 def confirm_delete_keyboard():
     buttons = [
         [
@@ -97,7 +101,6 @@ def confirm_delete_keyboard():
         ]
     ]
     return InlineKeyboardMarkup(buttons)
-
 
 # Подменю Jira-уведомлений
 def jira_menu_keyboard(user_id: int):
@@ -133,7 +136,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard(user_id),
     )
     return MAIN_MENU
-
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -171,10 +173,9 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Переходим в настройки
         await query.edit_message_text(
             "Открываю настройки...",
-            reply_markup=settings_menu_keyboard()
+            reply_markup=settings_menu_keyboard(user_id)
         )
         return SETTINGS_MENU
-
 
 async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -220,7 +221,6 @@ async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup=main_menu_keyboard(user_id)
     )
     return MAIN_MENU
-
 
 async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -291,7 +291,6 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
         )
         return ADD_EMAIL
 
-
 async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработка нажатий в меню "Настройки" (состояние SETTINGS_MENU).
@@ -316,6 +315,16 @@ async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return MAIN_MENU
 
+    # [MOD] Переключение тихих уведомлений
+    elif data == "toggle_quiet_notifications":
+        toggle_quiet_notifications(user_id)
+        conf = get_notifications_config(user_id)
+        status = "ДА" if conf["quiet_notifications"] else "НЕТ"
+        await query.edit_message_text(
+            f"Тихие сообщения вне рабочего времени теперь: {status}",
+            reply_markup=settings_menu_keyboard(user_id)
+        )
+        return SETTINGS_MENU
 
 async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -354,10 +363,9 @@ async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_to_settings":
         await query.edit_message_text(
             "Настройки",
-            reply_markup=settings_menu_keyboard()
+            reply_markup=settings_menu_keyboard(user_id)
         )
         return SETTINGS_MENU
-
 
 async def confirm_delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -381,7 +389,6 @@ async def confirm_delete_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=mail_menu_keyboard(user_id)
         )
         return MAIL_MENU
-
 
 async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -411,7 +418,6 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return JIRA_MENU
 
-
 async def fallback_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Если пользователь написал что-то рандомное не в ADD_EMAIL,
@@ -423,7 +429,6 @@ async def fallback_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=main_menu_keyboard(user_id)
     )
     return MAIN_MENU
-
 
 def build_conversation_handler():
     """

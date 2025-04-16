@@ -23,7 +23,6 @@ async def check_mail_for_all_users(app):
         await asyncio.gather(*tasks)
     logging.info("=== Завершён проход проверки почты ===")
 
-
 async def check_and_notify(app, user_id: int, config: dict):
     """
     Асинхронная проверка почты конкретного пользователя.
@@ -90,6 +89,20 @@ async def check_and_notify(app, user_id: int, config: dict):
 
     new_messages = await asyncio.to_thread(fetch_new_messages)
 
+    # [MOD] Функция определения "тихого времени"
+    def is_quiet_time() -> bool:
+        """
+        Возвращает True, если сейчас нерабочее время (с учётом МСК 9-18 Пн-Пт).
+        """
+        moscow_dt = datetime.utcnow() + timedelta(hours=3)  # UTC+3 для Москвы
+        # Понедельник=0, ..., Воскресенье=6
+        weekday = moscow_dt.weekday()  # 0..6
+        hour = moscow_dt.hour
+        # Рабочие дни: 0..4 (Пн..Пт), рабочие часы: 9..17
+        if 0 <= weekday <= 4 and 9 <= hour < 18:
+            return False
+        return True
+
     # Рассылаем уведомления
     for uid, subject, from_, raw_html in new_messages:
         # Разбираем Jira
@@ -98,6 +111,12 @@ async def check_and_notify(app, user_id: int, config: dict):
         user_jira_conf = config["notifications"]["jira"]
         allowed = {k for k, v in user_jira_conf.items() if v}
         jira_msgs = parse_jira_email(subject, raw_html, allowed_event_types=allowed)
+
+        # [MOD] Если включен "quiet_notifications" и сейчас тихое время, то disable_notification=True
+        quiet_enabled = config["notifications"].get("quiet_notifications", True)
+        disable_notif = False
+        if quiet_enabled and is_quiet_time():
+            disable_notif = True
 
         if jira_msgs is None:
             # Обычное письмо
@@ -109,7 +128,8 @@ async def check_and_notify(app, user_id: int, config: dict):
                 await app.bot.send_message(
                     chat_id=user_id,
                     text=message_text,
-                    parse_mode='Markdown'
+                    parse_mode='Markdown',
+                    disable_notification=disable_notif  # [MOD]
                 )
         elif len(jira_msgs) > 0:
             # Jira-события есть (и не отфильтрованы)
@@ -117,7 +137,8 @@ async def check_and_notify(app, user_id: int, config: dict):
                 await app.bot.send_message(
                     chat_id=user_id,
                     text=message_text,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_notification=disable_notif  # [MOD]
                 )
         else:
             # Jira, но после фильтрации ничего не осталось
