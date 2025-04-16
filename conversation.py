@@ -146,6 +146,9 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "add_email":
         # Переходим в состояние ADD_EMAIL, редактируем текущее сообщение
+        # Сбрасываем help_mode, если был
+        context.user_data.pop("help_mode", None)
+
         text = (
             "Введите свою почту и пароль в формате:\n\n"
             "`email@example.com пароль`\n\n"
@@ -179,6 +182,17 @@ async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_T
     """
     user_id = update.effective_user.id
     text_received = update.message.text.strip()
+
+    # --- Минимальное изменение: если включён help_mode, выходим в главное меню
+    if context.user_data.get("help_mode"):
+        # Сразу возвращаем в главное меню и снимаем help_mode
+        context.user_data.pop("help_mode", None)
+        await update.message.reply_text(
+            "Возвращаюсь в главное меню.",
+            reply_markup=main_menu_keyboard(user_id)
+        )
+        return MAIN_MENU
+    # --- конец изменения
 
     # Парсим "email password"
     parts = text_received.split()
@@ -218,6 +232,9 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
     data = query.data
 
     if data == "help_email":
+        # Включаем help_mode
+        context.user_data["help_mode"] = True
+
         # Текст с отключённым предпросмотром
         text = (
             "1. Перейдите по ссылке:\n"
@@ -227,7 +244,7 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
             "- Пароли приложений и OAuth-токены\n\n"
             "2. Перейдите по ссылке:\n"
             "https://id.yandex.ru/security/app-passwords\n"
-            "и создайте пароль приложения почты, назвав его 'Чат-бот уведомления'."
+            "и создайте пароль приложения, назвав его 'Чат-бот уведомления'."
         )
         kb = [
             [
@@ -243,6 +260,8 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
         return ADD_EMAIL
 
     elif data == "cancel_add_email":
+        # Снимаем help_mode
+        context.user_data.pop("help_mode", None)
         # Возврат в главное меню
         await query.edit_message_text(
             "Отмена. Возвращаюсь в главное меню.",
@@ -251,6 +270,8 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
         return MAIN_MENU
 
     elif data == "add_email_again":
+        # Выключаем help_mode, чтобы можно было нормально вводить email
+        context.user_data.pop("help_mode", None)
         # Повторно показываем инструкцию по формату ввода почты
         text = (
             "Введите свою почту и пароль в формате:\n\n"
