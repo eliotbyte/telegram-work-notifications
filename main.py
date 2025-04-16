@@ -16,7 +16,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
-logging.basicConfig(level=logging.INFO)
+LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = logging._nameToLevel.get(LOG_LEVEL_NAME.upper(), logging.INFO)
+
+logging.basicConfig(level=LOG_LEVEL)
 
 async def scheduled_mail_check(app):
     """
@@ -38,7 +41,6 @@ async def post_init(application):
     
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler()
-    # Вместо lambda используем просто функцию scheduled_mail_check
     scheduler.add_job(
         scheduled_mail_check,
         trigger='interval',
