@@ -110,7 +110,6 @@ def jira_menu_keyboard(user_id: int):
 
     row_buttons = []
     for e_type, value in jira_conf.items():
-        # ДА/НЕТ вместо ON/OFF
         label = f"{e_type} [{'ДА' if value else 'НЕТ'}]"
         row_buttons.append([InlineKeyboardButton(label, callback_data=f"toggle_jira_{e_type}")])
 
@@ -195,7 +194,9 @@ async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_T
             client.login(email_value, password)
     except Exception as e:
         logging.warning(f"[{user_id}] Ошибка логина в почту: {e}")
-        await update.message.reply_text(f"❌ Не удалось войти в почту:\n{e}\n\nПопробуйте снова или нажмите 'Отмена'.")
+        await update.message.reply_text(
+            f"❌ Не удалось войти в почту:\n{e}\n\nПопробуйте снова или нажмите 'Отмена'."
+        )
         return ADD_EMAIL
 
     # Если успешно, сохраняем
@@ -209,7 +210,7 @@ async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_T
 
 async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработка нажатий на кнопки "Помощь" / "Отмена" в состоянии ADD_EMAIL.
+    Обработка нажатий на кнопки "Помощь" / "Отмена" (состояние ADD_EMAIL).
     """
     query = update.callback_query
     user_id = query.from_user.id
@@ -217,18 +218,30 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
     data = query.data
 
     if data == "help_email":
+        # Текст с отключённым предпросмотром
         text = (
-            "1. Перейдите по ссылке: "
-            "https://mail.yandex.ru/?#setup/client "
+            "1. Перейдите по ссылке:\n"
+            "https://mail.yandex.ru/?#setup/client \n"
             "и убедитесь, что установлены флажки:\n"
             "- С сервера imap.yandex.ru по протоколу IMAP\n"
             "- Пароли приложений и OAuth-токены\n\n"
-            "2. Перейдите по ссылке: "
+            "2. Перейдите по ссылке:\n"
             "https://id.yandex.ru/security/app-passwords\n"
-            "и создайте пароль приложения, назвав его 'Чат-бот уведомления'."
+            "и создайте пароль приложения почты, назвав его 'Чат-бот уведомления'."
         )
-        await query.edit_message_text(text)
+        kb = [
+            [
+                InlineKeyboardButton("Добавить почту", callback_data="add_email_again"),
+                InlineKeyboardButton("Вернуться в меню", callback_data="cancel_add_email")
+            ]
+        ]
+        await query.edit_message_text(
+            text=text,
+            reply_markup=InlineKeyboardMarkup(kb),
+            disable_web_page_preview=True
+        )
         return ADD_EMAIL
+
     elif data == "cancel_add_email":
         # Возврат в главное меню
         await query.edit_message_text(
@@ -236,6 +249,26 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
             reply_markup=main_menu_keyboard(user_id)
         )
         return MAIN_MENU
+
+    elif data == "add_email_again":
+        # Повторно показываем инструкцию по формату ввода почты
+        text = (
+            "Введите свою почту и пароль в формате:\n\n"
+            "`email@example.com пароль`\n\n"
+            "Либо нажмите кнопку 'Помощь' для инструкции, или 'Отмена' чтобы вернуться."
+        )
+        kb = [
+            [
+                InlineKeyboardButton("Помощь", callback_data="help_email"),
+                InlineKeyboardButton("Отмена", callback_data="cancel_add_email"),
+            ]
+        ]
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return ADD_EMAIL
 
 
 async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -386,7 +419,7 @@ def build_conversation_handler():
             ADD_EMAIL: [
                 # В ADD_EMAIL читаем текст как почта+пароль
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_email_handler_text),
-                CallbackQueryHandler(add_email_handler_callback, pattern="^help_email|cancel_add_email$"),
+                CallbackQueryHandler(add_email_handler_callback, pattern="^(help_email|cancel_add_email|add_email_again)$"),
             ],
             SETTINGS_MENU: [
                 CallbackQueryHandler(settings_menu_handler),
