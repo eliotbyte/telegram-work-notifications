@@ -6,6 +6,7 @@ from telegram.ext import ApplicationBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
+from telegram import BotCommand
 from conversation import build_conversation_handler
 from mail_checker import check_mail_for_all_users
 from config import load_user_config, save_user_config
@@ -25,8 +26,16 @@ async def scheduled_mail_check(app):
 
 async def post_init(application):
     """
-    Запуск планировщика после инициализации бота.
+    Запуск планировщика после инициализации бота + установка команд.
     """
+    # Устанавливаем команды для меню в Telegram
+    await application.bot.set_my_commands([
+        BotCommand("start", "Открыть главное меню"),
+        # Можно добавить и другие команды:
+        # BotCommand("help", "Вывести справку по боту"),
+        # BotCommand("status", "Проверить состояние бота"),
+    ])
+    
     loop = asyncio.get_running_loop()
     scheduler = AsyncIOScheduler()
     # Вместо lambda используем просто функцию scheduled_mail_check
