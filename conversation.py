@@ -146,7 +146,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
     if data == "add_email":
-        # Переходим в состояние ADD_EMAIL
+        # Переходим в состояние ADD_EMAIL, редактируем текущее сообщение
         text = (
             "Введите свою почту и пароль в формате:\n\n"
             "`email@example.com пароль`\n\n"
@@ -158,12 +158,19 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("Отмена", callback_data="cancel_add_email"),
             ]
         ]
-        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
         return ADD_EMAIL
 
     elif data == "settings":
         # Переходим в настройки
-        await query.message.reply_text("Открываю настройки...", reply_markup=settings_menu_keyboard())
+        await query.edit_message_text(
+            "Открываю настройки...",
+            reply_markup=settings_menu_keyboard()
+        )
         return SETTINGS_MENU
 
 
@@ -220,11 +227,11 @@ async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAU
             "https://id.yandex.ru/security/app-passwords\n"
             "и создайте пароль приложения, назвав его 'Чат-бот уведомления'."
         )
-        await query.message.reply_text(text)
+        await query.edit_message_text(text)
         return ADD_EMAIL
     elif data == "cancel_add_email":
         # Возврат в главное меню
-        await query.message.reply_text(
+        await query.edit_message_text(
             "Отмена. Возвращаюсь в главное меню.",
             reply_markup=main_menu_keyboard(user_id)
         )
@@ -241,12 +248,18 @@ async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
 
     if data == "mail_menu":
-        await query.message.reply_text("Настройки почты", reply_markup=mail_menu_keyboard(user_id))
+        await query.edit_message_text(
+            "Настройки почты",
+            reply_markup=mail_menu_keyboard(user_id)
+        )
         return MAIL_MENU
 
     elif data == "back_to_main":
         # Возврат в главное меню
-        await query.message.reply_text("Главное меню", reply_markup=main_menu_keyboard(user_id))
+        await query.edit_message_text(
+            "Главное меню",
+            reply_markup=main_menu_keyboard(user_id)
+        )
         return MAIN_MENU
 
 
@@ -260,7 +273,10 @@ async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "delete_email":
-        await query.message.reply_text("Вы действительно хотите удалить почту?", reply_markup=confirm_delete_keyboard())
+        await query.edit_message_text(
+            "Вы действительно хотите удалить почту?",
+            reply_markup=confirm_delete_keyboard()
+        )
         return CONFIRM_DELETE_EMAIL
 
     elif data == "toggle_mail_notifications":
@@ -268,18 +284,24 @@ async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conf = get_notifications_config(user_id)
         mail_on = conf["mail"]
         status = "ДА" if mail_on else "НЕТ"
-        await query.message.reply_text(
+        await query.edit_message_text(
             f"Уведомления о письмах теперь: {status}",
             reply_markup=mail_menu_keyboard(user_id)
         )
         return MAIL_MENU
 
     elif data == "jira_menu":
-        await query.message.reply_text("Настройки Jira-уведомлений", reply_markup=jira_menu_keyboard(user_id))
+        await query.edit_message_text(
+            "Настройки Jira-уведомлений",
+            reply_markup=jira_menu_keyboard(user_id)
+        )
         return JIRA_MENU
 
     elif data == "back_to_settings":
-        await query.message.reply_text("Настройки", reply_markup=settings_menu_keyboard())
+        await query.edit_message_text(
+            "Настройки",
+            reply_markup=settings_menu_keyboard()
+        )
         return SETTINGS_MENU
 
 
@@ -294,10 +316,16 @@ async def confirm_delete_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if data == "delete_yes":
         clear_email_credentials(user_id)
-        await query.message.reply_text("Почта удалена!", reply_markup=main_menu_keyboard(user_id))
+        await query.edit_message_text(
+            "Почта удалена!",
+            reply_markup=main_menu_keyboard(user_id)
+        )
         return MAIN_MENU
     elif data == "delete_no":
-        await query.message.reply_text("Отмена удаления.", reply_markup=mail_menu_keyboard(user_id))
+        await query.edit_message_text(
+            "Отмена удаления.",
+            reply_markup=mail_menu_keyboard(user_id)
+        )
         return MAIL_MENU
 
 
@@ -311,7 +339,10 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "back_to_mail_menu":
-        await query.message.reply_text("Настройки почты", reply_markup=mail_menu_keyboard(user_id))
+        await query.edit_message_text(
+            "Настройки почты",
+            reply_markup=mail_menu_keyboard(user_id)
+        )
         return MAIL_MENU
 
     if data.startswith("toggle_jira_"):
@@ -320,7 +351,7 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_val = conf["jira"].get(e_type, False)
         set_jira_notification(user_id, e_type, not current_val)
 
-        await query.message.reply_text(
+        await query.edit_message_text(
             f"Переключили '{e_type}' -> {not current_val}",
             reply_markup=jira_menu_keyboard(user_id)
         )
