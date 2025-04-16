@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from email import policy
 from email.parser import BytesParser
 from imapclient import IMAPClient
-from config import user_configs, save_user_config
+import config
+from config import save_user_config
 from filters.jira_parser import parse_jira_email
 from telegram.helpers import escape_markdown
 
@@ -15,8 +16,8 @@ async def check_mail_for_all_users(app):
     """
     logging.info("=== Запуск проверки почты для всех пользователей ===")
     tasks = []
-    for user_id_str, config in user_configs.items():
-        tasks.append(asyncio.create_task(check_and_notify(app, int(user_id_str), config)))
+    for user_id_str, config_item in config.user_configs.items():
+        tasks.append(asyncio.create_task(check_and_notify(app, int(user_id_str), config_item)))
 
     if tasks:
         await asyncio.gather(*tasks)
