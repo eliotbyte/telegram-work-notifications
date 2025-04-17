@@ -11,7 +11,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-import logging
 import os
 from urllib.parse import urlencode
 
@@ -42,6 +41,7 @@ MAIN_MENU, CONFIRM_DELETE_EMAIL, SETTINGS_MENU, MAIL_MENU, JIRA_MENU = range(5)
 # --------------------------------------------------------------------------- #
 def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Показываем «Добавить почту» или «Настройки»."""
+    ensure_user_config(user_id)
     email, token, _ = get_email_credentials(user_id)
     buttons = (
         [[InlineKeyboardButton("Добавить почту", callback_data="add_email")]]
@@ -109,7 +109,7 @@ def jira_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 # --------------------------------------------------------------------------- #
-# Хэндлеры                                                                     #
+# Хэндлеры меню                                                                #
 # --------------------------------------------------------------------------- #
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start — приветствие и главное меню."""
@@ -130,35 +130,48 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # ----------------------------------------------------------------------- #
-    # «Добавить почту» → выдаём ссылку OAuth                                  #
-    # ----------------------------------------------------------------------- #
+    # «Добавить почту» → выдаём ссылку OAuth
     if data == "add_email":
         params = {
             "response_type": "code",
             "client_id": YANDEX_CLIENT_ID,
             "redirect_uri": REDIRECT_URI,
             "scope": SCOPE,
-            "state": str(user_id),  # связываем токен с Telegram‑ID
+            "state": str(user_id),
         }
         auth_link = f"https://oauth.yandex.ru/authorize?{urlencode(params)}"
-
-        await query.message.reply_text(
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Авторизоваться через Яндекс", url=auth_link)],
+                [InlineKeyboardButton("Назад", callback_data="back_to_main")],
+            ]
+        )
+        await query.edit_message_text(
             (
-                "⚡ *Шаг 1.* Нажмите ссылку ниже и подтвердите доступ к почте.\n"
-                "⚡ *Шаг 2.* Вернитесь в чат — я всё сделаю сам."
+                "⚡ *Шаг 1.* Нажмите кнопку ниже и перейдите по ссылке.\n"
+                "⚡ *Шаг 2.* Авторизуйтесь на сайте и вернитесь в чат."
             ),
             parse_mode="Markdown",
+            reply_markup=keyboard,
             disable_web_page_preview=True,
         )
-        await query.message.reply_text(auth_link)
         return MAIN_MENU
 
+    # «Настройки»
     elif data == "settings":
         await query.edit_message_text(
             "Открываю настройки...", reply_markup=settings_menu_keyboard(user_id)
         )
         return SETTINGS_MENU
+
+    # «Назад» из любого места
+    elif data == "back_to_main":
+        await query.edit_message_text(
+            "Главное меню", reply_markup=main_menu_keyboard(user_id)
+        )
+        return MAIN_MENU
+
+    return MAIN_MENU
 
 
 async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
