@@ -1,28 +1,72 @@
 import os
 import json
-import logging
+import sqlite3
 from datetime import datetime
 
-# Путь до папки с данными
+# Папка с данными (см. docker‑compose → volumes)
 DATA_DIR = "/app/data"
-USER_CONFIG_FILE = os.path.join(DATA_DIR, "user_config.json")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# Глобальная структура user_configs: {str(user_id): {...}}
-user_configs = {}
+# Файл БД
+DB_FILE = os.path.join(DATA_DIR, "user_config.db")
+
+# ─────────────────────  инициализация БД ────────────────────────────────────
+def _init_db() -> None:
+    """
+    Создаём файл и таблицу, если их ещё нет.
+    Включаем WAL, чтобы два контейнера могли одновременно писать.
+    """
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_configs (
+                user_id   TEXT PRIMARY KEY,
+                cfg_json  TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
 
 
+_init_db()
+
+# ─────────────────────  глобальный кэш в памяти ─────────────────────────────
+user_configs: dict[str, dict] = {}
+
+
+# ─────────────────────  helpers для чтения/записи ---------------------------
+def _read_all_from_db() -> dict[str, dict]:
+    """Считать все записи в Python‑словарь."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.execute("SELECT user_id, cfg_json FROM user_configs")
+        return {uid: json.loads(cfg) for uid, cfg in cur.fetchall()}
+
+
+def _write_to_db(data: dict[str, dict]) -> None:
+    """Атомарно перезаписать все изменённые записи."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.cursor()
+        for uid, cfg in data.items():
+            cur.execute(
+                """
+                INSERT INTO user_configs (user_id, cfg_json)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET cfg_json = excluded.cfg_json
+                """,
+                (uid, json.dumps(cfg, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+# ─────────────────────  прежние публичные функции ──────────────────────────
 def load_user_config():
-    """Читаем конфиги пользователей из файла."""
+    """Заполняем глобальный кэш из базы."""
     global user_configs
-    if os.path.exists(USER_CONFIG_FILE):
-        with open(USER_CONFIG_FILE, "r", encoding="utf-8") as f:
-            user_configs = json.load(f)
-    else:
-        user_configs = {}
+    user_configs = _read_all_from_db()
 
-    # Конвертируем типы, если нужно
-    for user_id, cfg in user_configs.items():
-        # Поправим last_uid
+    # Конвертируем старые строки в числовые uid + выставляем дефолты
+    for uid, cfg in user_configs.items():
         if cfg.get("last_uid") == "null":
             cfg["last_uid"] = None
         elif isinstance(cfg.get("last_uid"), str):
@@ -30,45 +74,37 @@ def load_user_config():
                 cfg["last_uid"] = int(cfg["last_uid"])
             except ValueError:
                 cfg["last_uid"] = None
-        # last_check_time
-        if "last_check_time" not in cfg:
-            cfg["last_check_time"] = datetime.now().isoformat()
+
+        cfg.setdefault("last_check_time", datetime.now().isoformat())
 
 
 def save_user_config():
-    """Сохраняем конфиги на диск."""
-    global user_configs
-    with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(user_configs, f, ensure_ascii=False, indent=2)
+    """
+    Пишем изменённый кэш обратно в БД.
+    Логика «прочитать‑слиять‑записать» теперь внутри sqlite,
+    поэтому гонок между процессами не будет.
+    """
+    _write_to_db(user_configs)
 
 
 def _refresh():
     """
-    Перечитать конфиг с диска, чтобы отразить возможные изменения,
-    сделанные другими хэндлерами/тредами (OAuth‑колбэком и т.п.).
+    Перечитать конфиг с диска, чтобы учесть изменения из другого процесса
+    (OAuth‑колбэка и т.п.).
     """
     load_user_config()
-# ---------------------------------------------------------------------------
 
 
+# ─────────────────────  API, вызываемое из остальных модулей ───────────────
 def ensure_user_config(user_id: int):
-    """
-    Создаёт заготовку конфига для пользователя, если отсутствует.
-    """
-    _refresh()  # [FIX]
-
+    """Гарантировать наличие записи о пользователе."""
+    _refresh()
     global user_configs
     uid_str = str(user_id)
+
     if uid_str not in user_configs:
-        # При создании нового пользователя сразу прописываем,
-        # что все Jira-уведомления включены, кроме worklog,
-        # а уведомления по обычной почте — отключены (False).
         user_configs[uid_str] = {
-            "email": {
-                "value": None,
-                "password": None,
-                "host": "imap.yandex.ru",
-            },
+            "email": {"value": None, "password": None, "host": "imap.yandex.ru"},
             "notifications": {
                 "jira": {
                     "created": True,
@@ -79,9 +115,7 @@ def ensure_user_config(user_id: int):
                     "mention_comment": True,
                     "worklog": False,
                 },
-                # Изначально False
                 "mail": False,
-                # [MOD] Новая настройка "Тихие сообщения вне рабочего времени" (по умолчанию включена)
                 "quiet_notifications": True,
             },
             "last_uid": None,
@@ -91,98 +125,54 @@ def ensure_user_config(user_id: int):
 
 
 def set_email_credentials(user_id: int, email_value: str, password: str):
-    """
-    Сохранить почту и пароль/токен в конфиг пользователя.
-    """
-    ensure_user_config(user_id)          # [_refresh()] уже внутри
-    global user_configs
+    ensure_user_config(user_id)
     uid_str = str(user_id)
-
     user_configs[uid_str]["email"]["value"] = email_value
     user_configs[uid_str]["email"]["password"] = password
     save_user_config()
 
 
 def clear_email_credentials(user_id: int):
-    """
-    Удалить данные почты у пользователя.
-    """
-    ensure_user_config(user_id)          # [_refresh()] уже внутри
-    global user_configs
+    ensure_user_config(user_id)
     uid_str = str(user_id)
-
     user_configs[uid_str]["email"]["value"] = None
     user_configs[uid_str]["email"]["password"] = None
     save_user_config()
 
 
 def get_email_credentials(user_id: int):
-    """
-    Получить (email, password, host) для пользователя.
-    Вернёт (None, None, None), если не настроено.
-    """
-    _refresh()  # [FIX]
-
-    global user_configs
+    _refresh()
     uid_str = str(user_id)
-    cfg = user_configs.get(uid_str)
-    if not cfg:
-        return None, None, None
-
-    return (
-        cfg["email"].get("value"),
-        cfg["email"].get("password"),
-        cfg["email"].get("host"),
-    )
+    cfg = user_configs.get(uid_str, {})
+    mail = cfg.get("email", {})
+    return mail.get("value"), mail.get("password"), mail.get("host")
 
 
 def set_jira_notification(user_id: int, event_type: str, value: bool):
-    """
-    Установить флаг включения/выключения определённого события Jira.
-    """
-    ensure_user_config(user_id)          # [_refresh()] уже внутри
-    global user_configs
+    ensure_user_config(user_id)
     uid_str = str(user_id)
-
     if event_type in user_configs[uid_str]["notifications"]["jira"]:
         user_configs[uid_str]["notifications"]["jira"][event_type] = value
         save_user_config()
 
 
 def toggle_mail_notifications(user_id: int):
-    """
-    Переключить флаг уведомлений по не-Jira письмам.
-    """
-    ensure_user_config(user_id)          # [_refresh()] уже внутри
-    global user_configs
+    ensure_user_config(user_id)
     uid_str = str(user_id)
-
-    current = user_configs[uid_str]["notifications"]["mail"]
-    user_configs[uid_str]["notifications"]["mail"] = not current
+    cur = user_configs[uid_str]["notifications"]["mail"]
+    user_configs[uid_str]["notifications"]["mail"] = not cur
     save_user_config()
 
 
 def get_notifications_config(user_id: int):
-    """
-    Получить конфиг уведомлений (jira dict, mail bool).
-    """
-    _refresh()  # [FIX]
-
-    global user_configs
-    uid_str = str(user_id)
-    ensure_user_config(user_id)          # (гарантия, что структура есть)
-    return user_configs[uid_str]["notifications"]
+    _refresh()
+    ensure_user_config(user_id)
+    return user_configs[str(user_id)]["notifications"]
 
 
-# [MOD] Функция переключения тихих уведомлений
 def toggle_quiet_notifications(user_id: int):
-    """
-    Переключить флаг тихих уведомлений вне рабочего времени.
-    """
-    ensure_user_config(user_id)          # [_refresh()] уже внутри
-    global user_configs
+    ensure_user_config(user_id)
     uid_str = str(user_id)
-
-    current = user_configs[uid_str]["notifications"].get("quiet_notifications", True)
-    user_configs[uid_str]["notifications"]["quiet_notifications"] = not current
+    cur = user_configs[uid_str]["notifications"].get("quiet_notifications", True)
+    user_configs[uid_str]["notifications"]["quiet_notifications"] = not cur
     save_user_config()
