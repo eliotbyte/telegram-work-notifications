@@ -1,159 +1,150 @@
 import asyncio
-import base64
 import logging
 from datetime import datetime, timedelta
 from email import policy
 from email.parser import BytesParser
+
 from imapclient import IMAPClient
+
 import config
 from config import save_user_config
 from filters.jira_parser import parse_jira_email
 from telegram.helpers import escape_markdown
 
 
-async def check_mail_for_all_users(app):
+# ────────────────────────  ⚡ Быстрая UID‑закладка  ─────────────────────────
+async def bookmark_latest_uid(
+    user_id: int,
+    email: str,
+    token: str,
+    host: str = "imap.yandex.ru",
+) -> None:
     """
-    Асинхронная проверка почты для всех пользователей.
-    Вызывается планировщиком.
-    """
-    logging.info("=== Запуск проверки почты для всех пользователей ===")
-    tasks = []
-    for user_id_str, config_item in config.user_configs.items():
-        tasks.append(asyncio.create_task(check_and_notify(app, int(user_id_str), config_item)))
+    • Определяет максимальный UID в INBOX
+    • Сохраняет его в конфиг вместе с текущим временем.
 
+    Нужна, чтобы при первой авторизации НЕ рассылать старые письма.
+    """
+
+    def _get_highest_uid() -> int:
+        with IMAPClient(host, ssl=True) as c:
+            c.oauth2_login(email, token)
+            c.select_folder("INBOX", readonly=True)
+            uids = c.search(["ALL"])
+            return max(uids) if uids else 0
+
+    highest_uid = await asyncio.to_thread(_get_highest_uid)
+
+    cfg = config.user_configs.setdefault(str(user_id), {})
+    cfg["last_uid"] = highest_uid
+    cfg["last_check_time"] = datetime.now().isoformat()
+    save_user_config()
+
+    logging.info(f"[{user_id}] UID‑закладка выполнена ⇒ {highest_uid}")
+
+
+# ───────────────────  Основная проверка почты (без изменений API) ───────────
+async def check_mail_for_all_users(app):
+    logging.info("=== Проверка почты для всех пользователей ===")
+    tasks = [
+        asyncio.create_task(check_and_notify(app, int(uid), cfg))
+        for uid, cfg in config.user_configs.items()
+    ]
     if tasks:
         await asyncio.gather(*tasks)
     logging.info("=== Завершён проход проверки почты ===")
 
 
-async def check_and_notify(app, user_id: int, config: dict):
-    """
-    Асинхронная проверка почты конкретного пользователя.
-    Учитываем флаги «mail» и «jira[event_type]».
-    """
-    email_value = config["email"]["value"]
-    token = config["email"]["password"]        # [OAUTH] раньше был «password»
-    host = config["email"]["host"]
-
-    # Если почта не настроена, выходим
+async def check_and_notify(app, user_id: int, cfg: dict):
+    email_value = cfg["email"]["value"]
+    token = cfg["email"]["password"]
+    host = cfg["email"]["host"]
     if not email_value or not token:
         return
 
     logging.info(f"[{user_id}] Проверяем почту {email_value}")
 
-    # Загружаем время последней проверки
-    fromiso = config.get("last_check_time", datetime.now().isoformat())
-    last_check_time = datetime.fromisoformat(fromiso)
+    # --- диапазон времени ----------------------------------------------------
     now_dt = datetime.now()
-
+    last_check_time = datetime.fromisoformat(
+        cfg.get("last_check_time", now_dt.isoformat())
+    )
     if (now_dt - last_check_time) > timedelta(minutes=15):
         last_check_time = now_dt - timedelta(minutes=15)
 
     since_str = last_check_time.strftime("%d-%b-%Y")
-    last_uid = config.get("last_uid", None)
+    last_uid = cfg.get("last_uid")
 
-    def fetch_new_messages():
-        """
-        Синхронная работа с IMAP в отдельном потоке.
-        """
-        result = []
+    # --- получаем письма -----------------------------------------------------
+    def fetch_new():
+        res = []
         try:
-            with IMAPClient(host, ssl=True) as client:
-                # ------------------------------------------------------------------
-                # [OAUTH] авторизация через встроенную обёртку oauth2_login()
-                #         (механизм по‑умолчанию — ‘XOAUTH2’)
-                # ------------------------------------------------------------------
-                client.oauth2_login(email_value, token)
-                # ------------------------------------------------------------------
-
-                client.select_folder("INBOX", readonly=True)
-
-                messages = client.search(["SINCE", since_str])
-                logging.info(f"[{user_id}] Найдено писем c {since_str}: {len(messages)}")
-
-                for uid in messages:
+            with IMAPClient(host, ssl=True) as c:
+                c.oauth2_login(email_value, token)
+                c.select_folder("INBOX", readonly=True)
+                for uid in c.search(["SINCE", since_str]):
                     if last_uid and uid <= last_uid:
                         continue
-                    raw_data = client.fetch([uid], ["BODY[]"])[uid][b"BODY[]"]
+                    data = c.fetch([uid], ["BODY[]", "INTERNALDATE"])[uid]
+                    if data[b"INTERNALDATE"].replace(tzinfo=None) <= last_check_time:
+                        continue
+                    raw_data = data[b"BODY[]"]
                     msg = BytesParser(policy=policy.default).parsebytes(raw_data)
                     subject = msg["subject"] or "(без темы)"
-                    from_ = msg["from"] or "(неизвестно)"
-
-                    raw_html = ""
+                    sender = msg["from"] or "(неизвестно)"
+                    html = ""
                     if msg.is_multipart():
                         for part in msg.walk():
                             if part.get_content_type() == "text/html":
-                                charset = part.get_content_charset() or "utf-8"
-                                raw_html = part.get_payload(decode=True).decode(charset, errors="replace")
+                                html = part.get_payload(decode=True).decode(
+                                    part.get_content_charset() or "utf-8",
+                                    errors="replace",
+                                )
                                 break
-                    else:
-                        if msg.get_content_type() == "text/html":
-                            charset = msg.get_content_charset() or "utf-8"
-                            raw_html = msg.get_payload(decode=True).decode(charset, errors="replace")
-
-                    result.append((uid, subject, from_, raw_html))
+                    elif msg.get_content_type() == "text/html":
+                        html = msg.get_payload(decode=True).decode(
+                            msg.get_content_charset() or "utf-8",
+                            errors="replace",
+                        )
+                    res.append((uid, subject, sender, html))
         except Exception as e:
-            logging.error(f"[{user_id}] IMAP/XOAUTH2 ошибка: {e}")   # [OAUTH] уточнили тип ошибки
-        return result
+            logging.error(f"[{user_id}] IMAP/XOAUTH2 ошибка: {e}")
+        return res
 
-    new_messages = await asyncio.to_thread(fetch_new_messages)
+    new_messages = await asyncio.to_thread(fetch_new)
 
-    # [MOD] Функция определения "тихого времени"
-    def is_quiet_time() -> bool:
-        """
-        Возвращает True, если сейчас нерабочее время (с учётом МСК 9-18 Пн-Пт).
-        """
-        moscow_dt = datetime.utcnow() + timedelta(hours=3)  # UTC+3 для Москвы
-        # Понедельник=0, ..., Воскресенье=6
-        weekday = moscow_dt.weekday()  # 0..6
-        hour = moscow_dt.hour
-        # Рабочие дни: 0..4 (Пн..Пт), рабочие часы: 9..17
-        if 0 <= weekday <= 4 and 9 <= hour < 18:
-            return False
-        return True
+    # --- «тихие часы» --------------------------------------------------------
+    def quiet_time() -> bool:
+        msk = datetime.utcnow() + timedelta(hours=3)
+        return not (0 <= msk.weekday() <= 4 and 9 <= msk.hour < 18)
 
-    # Рассылаем уведомления
-    for uid, subject, from_, raw_html in new_messages:
-        # Разбираем Jira
-        user_jira_conf = config["notifications"]["jira"]
-        allowed = {k for k, v in user_jira_conf.items() if v}
-        jira_msgs = parse_jira_email(subject, raw_html, allowed_event_types=allowed)
+    # --- рассылаем уведомления ----------------------------------------------
+    for uid, subject, sender, html in new_messages:
+        allowed = {k for k, v in cfg["notifications"]["jira"].items() if v}
+        jira_msgs = parse_jira_email(subject, html, allowed_event_types=allowed)
 
-        # [MOD] Если включен "quiet_notifications" и сейчас тихое время —
-        #       то disable_notification=True
-        quiet_enabled = config["notifications"].get("quiet_notifications", True)
-        disable_notif = quiet_enabled and is_quiet_time()
+        mute = cfg["notifications"].get("quiet_notifications", True) and quiet_time()
 
         if jira_msgs is None:
-            # Обычное письмо
-            if config["notifications"]["mail"]:
-                message_text = (
-                    f"📩 Новое письмо от {escape_markdown(from_)}\n"
-                    f"*Тема:* {escape_markdown(subject)}"
-                )
+            if cfg["notifications"]["mail"]:
                 await app.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode='Markdown',
-                    disable_notification=disable_notif  # [MOD]
-                )
-        elif len(jira_msgs) > 0:
-            # Jira‑события есть (и не отфильтрованы)
-            for message_text in jira_msgs:
-                await app.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="HTML",
-                    disable_notification=disable_notif  # [MOD]
+                    user_id,
+                    f"📩 Письмо от {escape_markdown(sender)}\n"
+                    f"*Тема:* {escape_markdown(subject)}",
+                    parse_mode="Markdown",
+                    disable_notification=mute,
                 )
         else:
-            # Jira, но после фильтрации ничего не осталось
-            pass
+            for txt in jira_msgs:
+                await app.bot.send_message(
+                    user_id,
+                    txt,
+                    parse_mode="HTML",
+                    disable_notification=mute,
+                )
 
-        # Обновляем last_uid
-        config["last_uid"] = uid
+        cfg["last_uid"] = uid
         save_user_config()
 
-    # Обновляем время
-    config["last_check_time"] = now_dt.isoformat()
+    cfg["last_check_time"] = now_dt.isoformat()
     save_user_config()
