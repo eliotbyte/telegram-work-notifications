@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 from datetime import datetime, timedelta
 from email import policy
@@ -8,6 +9,7 @@ import config
 from config import save_user_config
 from filters.jira_parser import parse_jira_email
 from telegram.helpers import escape_markdown
+
 
 async def check_mail_for_all_users(app):
     """
@@ -23,17 +25,18 @@ async def check_mail_for_all_users(app):
         await asyncio.gather(*tasks)
     logging.info("=== Завершён проход проверки почты ===")
 
+
 async def check_and_notify(app, user_id: int, config: dict):
     """
     Асинхронная проверка почты конкретного пользователя.
     Учитываем флаги «mail» и «jira[event_type]».
     """
     email_value = config["email"]["value"]
-    password = config["email"]["password"]
+    token = config["email"]["password"]        # [OAUTH] раньше был «password»
     host = config["email"]["host"]
 
     # Если почта не настроена, выходим
-    if not email_value or not password:
+    if not email_value or not token:
         return
 
     logging.info(f"[{user_id}] Проверяем почту {email_value}")
@@ -56,7 +59,13 @@ async def check_and_notify(app, user_id: int, config: dict):
         result = []
         try:
             with IMAPClient(host, ssl=True) as client:
-                client.login(email_value, password)
+                # ------------------------------------------------------------------
+                # [OAUTH] авторизация через встроенную обёртку oauth2_login()
+                #         (механизм по‑умолчанию — ‘XOAUTH2’)
+                # ------------------------------------------------------------------
+                client.oauth2_login(email_value, token)
+                # ------------------------------------------------------------------
+
                 client.select_folder("INBOX", readonly=True)
 
                 messages = client.search(["SINCE", since_str])
@@ -84,7 +93,7 @@ async def check_and_notify(app, user_id: int, config: dict):
 
                     result.append((uid, subject, from_, raw_html))
         except Exception as e:
-            logging.error(f"[{user_id}] IMAP ошибка: {e}")
+            logging.error(f"[{user_id}] IMAP/XOAUTH2 ошибка: {e}")   # [OAUTH] уточнили тип ошибки
         return result
 
     new_messages = await asyncio.to_thread(fetch_new_messages)
@@ -106,17 +115,14 @@ async def check_and_notify(app, user_id: int, config: dict):
     # Рассылаем уведомления
     for uid, subject, from_, raw_html in new_messages:
         # Разбираем Jira
-        # Чтобы учитывать включённые/выключенные типы Jira-событий —
-        # лучше передать allowed_event_types:
         user_jira_conf = config["notifications"]["jira"]
         allowed = {k for k, v in user_jira_conf.items() if v}
         jira_msgs = parse_jira_email(subject, raw_html, allowed_event_types=allowed)
 
-        # [MOD] Если включен "quiet_notifications" и сейчас тихое время, то disable_notification=True
+        # [MOD] Если включен "quiet_notifications" и сейчас тихое время —
+        #       то disable_notification=True
         quiet_enabled = config["notifications"].get("quiet_notifications", True)
-        disable_notif = False
-        if quiet_enabled and is_quiet_time():
-            disable_notif = True
+        disable_notif = quiet_enabled and is_quiet_time()
 
         if jira_msgs is None:
             # Обычное письмо
@@ -132,7 +138,7 @@ async def check_and_notify(app, user_id: int, config: dict):
                     disable_notification=disable_notif  # [MOD]
                 )
         elif len(jira_msgs) > 0:
-            # Jira-события есть (и не отфильтрованы)
+            # Jira‑события есть (и не отфильтрованы)
             for message_text in jira_msgs:
                 await app.bot.send_message(
                     chat_id=user_id,

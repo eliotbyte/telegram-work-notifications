@@ -3,3 +3,6 @@ imapclient==3.0.1
 apscheduler==3.11.0
 python-dotenv==1.1.0
 beautifulsoup4==4.13.3
+fastapi==0.115.12
+uvicorn==0.34.1
+requests==2.32.3

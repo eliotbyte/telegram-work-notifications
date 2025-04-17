@@ -2,7 +2,6 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    ReplyKeyboardRemove,
 )
 from telegram.ext import (
     ContextTypes,
@@ -12,50 +11,50 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+import logging
+import os
+from urllib.parse import urlencode
+
 from config import (
     ensure_user_config,
-    set_email_credentials,
     clear_email_credentials,
     get_email_credentials,
     set_jira_notification,
     toggle_mail_notifications,
     get_notifications_config,
-    # [MOD]
     toggle_quiet_notifications,
 )
-import logging
 
-# Состояния
-MAIN_MENU, ADD_EMAIL, CONFIRM_DELETE_EMAIL, SETTINGS_MENU, MAIL_MENU, JIRA_MENU = range(6)
+# --------------------------------------------------------------------------- #
+# OAuth‑параметры                                                              #
+# --------------------------------------------------------------------------- #
+YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID")
+REDIRECT_URI = os.getenv("YANDEX_REDIRECT_URI")
+SCOPE = "mail:imap_full login:email calendar:all"
 
-# ---- Кнопки ----
+# --------------------------------------------------------------------------- #
+# Состояния                                                                    #
+# --------------------------------------------------------------------------- #
+MAIN_MENU, CONFIRM_DELETE_EMAIL, SETTINGS_MENU, MAIL_MENU, JIRA_MENU = range(5)
 
-# Главное меню
-def main_menu_keyboard(user_id: int):
-    """
-    Возвращаем inline-клавиатуру для главного меню:
-      - Добавить почту (если почта не настроена)
-      - Настройки (если почта уже есть)
-    """
-    email, password, _ = get_email_credentials(user_id)
-    buttons = []
-    if not email or not password:
-        buttons.append([InlineKeyboardButton("Добавить почту", callback_data="add_email")])
-    else:
-        buttons.append([InlineKeyboardButton("Настройки", callback_data="settings")])
+# --------------------------------------------------------------------------- #
+# Клавиатуры                                                                   #
+# --------------------------------------------------------------------------- #
+def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Показываем «Добавить почту» или «Настройки»."""
+    email, token, _ = get_email_credentials(user_id)
+    buttons = (
+        [[InlineKeyboardButton("Добавить почту", callback_data="add_email")]]
+        if not email or not token
+        else [[InlineKeyboardButton("Настройки", callback_data="settings")]]
+    )
+    return InlineKeyboardMarkup(buttons)
 
-    markup = InlineKeyboardMarkup(buttons)
-    return markup
 
-# Подменю "Настройки"
-def settings_menu_keyboard(user_id: int):
-    """
-    Кнопка "Почта", "Тихие сообщения", "Назад в главное меню".
-    """
+def settings_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     conf = get_notifications_config(user_id)
     quiet_on = conf.get("quiet_notifications", True)
     quiet_label = f"Уведомлять только в рабочее время [{'ДА' if quiet_on else 'НЕТ'}]"
-
     buttons = [
         [InlineKeyboardButton("Почта", callback_data="mail_menu")],
         [InlineKeyboardButton(quiet_label, callback_data="toggle_quiet_notifications")],
@@ -63,238 +62,106 @@ def settings_menu_keyboard(user_id: int):
     ]
     return InlineKeyboardMarkup(buttons)
 
-# Подменю "Почта"
-def mail_menu_keyboard(user_id: int):
-    """
-    В меню "Почта" теперь:
-      - "Удалить"
-      - "Уведомления Jira"
-      - "Уведомления о письмах [ДА/НЕТ]"
-      - "Назад"
-    """
-    email_value, password, _ = get_email_credentials(user_id)
-    email_set = bool(email_value and password)
+
+def mail_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    email_value, token, _ = get_email_credentials(user_id)
+    email_set = bool(email_value and token)
     conf = get_notifications_config(user_id)
 
     buttons = []
     if email_set:
         buttons.append([InlineKeyboardButton("Удалить", callback_data="delete_email")])
 
-    # Кнопка "Уведомления Jira"
     buttons.append([InlineKeyboardButton("Уведомления Jira", callback_data="jira_menu")])
 
-    # Кнопка "Уведомления о письмах [ДА/НЕТ]"
     mail_on = conf["mail"]
     mail_label = "Уведомления о письмах [ДА]" if mail_on else "Уведомления о письмах [НЕТ]"
     buttons.append([InlineKeyboardButton(mail_label, callback_data="toggle_mail_notifications")])
 
-    # Кнопка "Назад" -> в настройки
     buttons.append([InlineKeyboardButton("Назад", callback_data="back_to_settings")])
-
     return InlineKeyboardMarkup(buttons)
 
-def confirm_delete_keyboard():
-    buttons = [
+
+def confirm_delete_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("Да", callback_data="delete_yes"),
-            InlineKeyboardButton("Нет", callback_data="delete_no"),
+            [
+                InlineKeyboardButton("Да", callback_data="delete_yes"),
+                InlineKeyboardButton("Нет", callback_data="delete_no"),
+            ]
         ]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    )
 
-# Подменю Jira-уведомлений
-def jira_menu_keyboard(user_id: int):
-    """
-    Генерируем кнопки для каждого типа событий: "created", "assigned" и т.д.
-    Каждая кнопка -> toggle_<event_type>, текст + статус [ДА]/[НЕТ].
-    """
+
+def jira_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     conf = get_notifications_config(user_id)
     jira_conf = conf["jira"]
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{e_type} [{'ДА' if value else 'НЕТ'}]",
+                callback_data=f"toggle_jira_{e_type}",
+            )
+        ]
+        for e_type, value in jira_conf.items()
+    ]
+    rows.append([InlineKeyboardButton("Назад", callback_data="back_to_mail_menu")])
+    return InlineKeyboardMarkup(rows)
 
-    row_buttons = []
-    for e_type, value in jira_conf.items():
-        label = f"{e_type} [{'ДА' if value else 'НЕТ'}]"
-        row_buttons.append([InlineKeyboardButton(label, callback_data=f"toggle_jira_{e_type}")])
-
-    # Добавляем кнопку "Назад"
-    row_buttons.append([InlineKeyboardButton("Назад", callback_data="back_to_mail_menu")])
-
-    return InlineKeyboardMarkup(row_buttons)
-
-# ---- Хэндлеры ----
-
+# --------------------------------------------------------------------------- #
+# Хэндлеры                                                                     #
+# --------------------------------------------------------------------------- #
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Команда /start - просто приветствие и показ главного меню.
-    """
+    """Команда /start — приветствие и главное меню."""
     user_id = update.effective_user.id
     ensure_user_config(user_id)
 
-    text = "Привет! Я бот для уведомлений.\nВыбирайте действие из меню ниже."
     await update.message.reply_text(
-        text,
+        "Привет! Я бот для уведомлений.\nВыберите действие из меню ниже.",
         reply_markup=main_menu_keyboard(user_id),
     )
     return MAIN_MENU
 
+
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка нажатий в главном меню (callback_data).
-    """
+    """Обработка нажатий в главном меню."""
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
-
     data = query.data
-    if data == "add_email":
-        # Переходим в состояние ADD_EMAIL, редактируем текущее сообщение
-        # Сбрасываем help_mode, если был
-        context.user_data.pop("help_mode", None)
 
-        text = (
-            "Введите свою почту и пароль в формате:\n\n"
-            "`email@example.com пароль`\n\n"
-            "Либо нажмите кнопку 'Помощь' для инструкции, или 'Отмена' чтобы вернуться."
-        )
-        kb = [
-            [
-                InlineKeyboardButton("Помощь", callback_data="help_email"),
-                InlineKeyboardButton("Отмена", callback_data="cancel_add_email"),
-            ]
-        ]
-        await query.edit_message_text(
-            text,
+    # ----------------------------------------------------------------------- #
+    # «Добавить почту» → выдаём ссылку OAuth                                  #
+    # ----------------------------------------------------------------------- #
+    if data == "add_email":
+        params = {
+            "response_type": "code",
+            "client_id": YANDEX_CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "scope": SCOPE,
+            "state": str(user_id),  # связываем токен с Telegram‑ID
+        }
+        auth_link = f"https://oauth.yandex.ru/authorize?{urlencode(params)}"
+
+        await query.message.reply_text(
+            (
+                "⚡ *Шаг 1.* Нажмите ссылку ниже и подтвердите доступ к почте.\n"
+                "⚡ *Шаг 2.* Вернитесь в чат — я всё сделаю сам."
+            ),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb)
+            disable_web_page_preview=True,
         )
-        return ADD_EMAIL
+        await query.message.reply_text(auth_link)
+        return MAIN_MENU
 
     elif data == "settings":
-        # Переходим в настройки
         await query.edit_message_text(
-            "Открываю настройки...",
-            reply_markup=settings_menu_keyboard(user_id)
+            "Открываю настройки...", reply_markup=settings_menu_keyboard(user_id)
         )
         return SETTINGS_MENU
 
-async def add_email_handler_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Пользователь прислал текст с логином и паролем (состояние ADD_EMAIL).
-    """
-    user_id = update.effective_user.id
-    text_received = update.message.text.strip()
-
-    # --- Минимальное изменение: если включён help_mode, выходим в главное меню
-    if context.user_data.get("help_mode"):
-        # Сразу возвращаем в главное меню и снимаем help_mode
-        context.user_data.pop("help_mode", None)
-        await update.message.reply_text(
-            "Возвращаюсь в главное меню.",
-            reply_markup=main_menu_keyboard(user_id)
-        )
-        return MAIN_MENU
-    # --- конец изменения
-
-    # Парсим "email password"
-    parts = text_received.split()
-    if len(parts) != 2:
-        await update.message.reply_text("❌ Формат неверный. Попробуйте ещё раз или нажмите 'Отмена'.")
-        return ADD_EMAIL
-
-    email_value, password = parts
-
-    from imapclient import IMAPClient
-    try:
-        with IMAPClient("imap.yandex.ru", ssl=True) as client:
-            client.login(email_value, password)
-    except Exception as e:
-        logging.warning(f"[{user_id}] Ошибка логина в почту: {e}")
-        await update.message.reply_text(
-            f"❌ Не удалось войти в почту:\n{e}\n\nПопробуйте снова или нажмите 'Отмена'."
-        )
-        return ADD_EMAIL
-
-    # Если успешно, сохраняем
-    set_email_credentials(user_id, email_value, password)
-    await update.message.reply_text(
-        "✅ Почта сохранена! Возвращаю вас в главное меню.",
-        reply_markup=main_menu_keyboard(user_id)
-    )
-    return MAIN_MENU
-
-async def add_email_handler_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка нажатий на кнопки "Помощь" / "Отмена" (состояние ADD_EMAIL).
-    """
-    query = update.callback_query
-    user_id = query.from_user.id
-    await query.answer()
-    data = query.data
-
-    if data == "help_email":
-        # Включаем help_mode
-        context.user_data["help_mode"] = True
-
-        # Текст с отключённым предпросмотром
-        text = (
-            "1. Перейдите по ссылке:\n"
-            "https://mail.yandex.ru/?#setup/client \n"
-            "и убедитесь, что установлены флажки:\n"
-            "- С сервера imap.yandex.ru по протоколу IMAP\n"
-            "- Пароли приложений и OAuth-токены\n\n"
-            "2. Перейдите по ссылке:\n"
-            "https://id.yandex.ru/security/app-passwords\n"
-            "и создайте пароль приложения, назвав его 'Чат-бот уведомления'."
-        )
-        kb = [
-            [
-                InlineKeyboardButton("Добавить почту", callback_data="add_email_again"),
-                InlineKeyboardButton("Вернуться в меню", callback_data="cancel_add_email")
-            ]
-        ]
-        await query.edit_message_text(
-            text=text,
-            reply_markup=InlineKeyboardMarkup(kb),
-            disable_web_page_preview=True
-        )
-        return ADD_EMAIL
-
-    elif data == "cancel_add_email":
-        # Снимаем help_mode
-        context.user_data.pop("help_mode", None)
-        # Возврат в главное меню
-        await query.edit_message_text(
-            "Отмена. Возвращаюсь в главное меню.",
-            reply_markup=main_menu_keyboard(user_id)
-        )
-        return MAIN_MENU
-
-    elif data == "add_email_again":
-        # Выключаем help_mode, чтобы можно было нормально вводить email
-        context.user_data.pop("help_mode", None)
-        # Повторно показываем инструкцию по формату ввода почты
-        text = (
-            "Введите свою почту и пароль в формате:\n\n"
-            "`email@example.com пароль`\n\n"
-            "Либо нажмите кнопку 'Помощь' для инструкции, или 'Отмена' чтобы вернуться."
-        )
-        kb = [
-            [
-                InlineKeyboardButton("Помощь", callback_data="help_email"),
-                InlineKeyboardButton("Отмена", callback_data="cancel_add_email"),
-            ]
-        ]
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return ADD_EMAIL
 
 async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка нажатий в меню "Настройки" (состояние SETTINGS_MENU).
-    """
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
@@ -302,34 +169,28 @@ async def settings_menu_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data == "mail_menu":
         await query.edit_message_text(
-            "Настройки почты",
-            reply_markup=mail_menu_keyboard(user_id)
+            "Настройки почты", reply_markup=mail_menu_keyboard(user_id)
         )
         return MAIL_MENU
 
     elif data == "back_to_main":
-        # Возврат в главное меню
         await query.edit_message_text(
-            "Главное меню",
-            reply_markup=main_menu_keyboard(user_id)
+            "Главное меню", reply_markup=main_menu_keyboard(user_id)
         )
         return MAIN_MENU
 
-    # [MOD] Переключение тихих уведомлений
     elif data == "toggle_quiet_notifications":
         toggle_quiet_notifications(user_id)
         conf = get_notifications_config(user_id)
         status = "ДА" if conf["quiet_notifications"] else "НЕТ"
         await query.edit_message_text(
             f"Тихие сообщения вне рабочего времени теперь: {status}",
-            reply_markup=settings_menu_keyboard(user_id)
+            reply_markup=settings_menu_keyboard(user_id),
         )
         return SETTINGS_MENU
 
+
 async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка нажатий в меню "Почта" (MAIL_MENU).
-    """
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
@@ -338,39 +199,34 @@ async def mail_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "delete_email":
         await query.edit_message_text(
             "Вы действительно хотите удалить почту?",
-            reply_markup=confirm_delete_keyboard()
+            reply_markup=confirm_delete_keyboard(),
         )
         return CONFIRM_DELETE_EMAIL
 
     elif data == "toggle_mail_notifications":
         toggle_mail_notifications(user_id)
         conf = get_notifications_config(user_id)
-        mail_on = conf["mail"]
-        status = "ДА" if mail_on else "НЕТ"
+        status = "ДА" if conf["mail"] else "НЕТ"
         await query.edit_message_text(
             f"Уведомления о письмах теперь: {status}",
-            reply_markup=mail_menu_keyboard(user_id)
+            reply_markup=mail_menu_keyboard(user_id),
         )
         return MAIL_MENU
 
     elif data == "jira_menu":
         await query.edit_message_text(
-            "Настройки Jira-уведомлений",
-            reply_markup=jira_menu_keyboard(user_id)
+            "Настройки Jira‑уведомлений", reply_markup=jira_menu_keyboard(user_id)
         )
         return JIRA_MENU
 
     elif data == "back_to_settings":
         await query.edit_message_text(
-            "Настройки",
-            reply_markup=settings_menu_keyboard(user_id)
+            "Настройки", reply_markup=settings_menu_keyboard(user_id)
         )
         return SETTINGS_MENU
 
+
 async def confirm_delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка подтверждения удаления почты (CONFIRM_DELETE_EMAIL).
-    """
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
@@ -379,21 +235,17 @@ async def confirm_delete_handler(update: Update, context: ContextTypes.DEFAULT_T
     if data == "delete_yes":
         clear_email_credentials(user_id)
         await query.edit_message_text(
-            "Почта удалена!",
-            reply_markup=main_menu_keyboard(user_id)
+            "Почта удалена!", reply_markup=main_menu_keyboard(user_id)
         )
         return MAIN_MENU
     elif data == "delete_no":
         await query.edit_message_text(
-            "Отмена удаления.",
-            reply_markup=mail_menu_keyboard(user_id)
+            "Отмена удаления.", reply_markup=mail_menu_keyboard(user_id)
         )
         return MAIL_MENU
 
+
 async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Обработка нажатий в меню Jira (JIRA_MENU).
-    """
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
@@ -401,8 +253,7 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_to_mail_menu":
         await query.edit_message_text(
-            "Настройки почты",
-            reply_markup=mail_menu_keyboard(user_id)
+            "Настройки почты", reply_markup=mail_menu_keyboard(user_id)
         )
         return MAIL_MENU
 
@@ -414,38 +265,29 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             f"Переключили '{e_type}' -> {not current_val}",
-            reply_markup=jira_menu_keyboard(user_id)
+            reply_markup=jira_menu_keyboard(user_id),
         )
         return JIRA_MENU
 
+
 async def fallback_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Если пользователь написал что-то рандомное не в ADD_EMAIL,
-    то переводим его в главное меню.
-    """
     user_id = update.effective_user.id
     await update.message.reply_text(
-        "Не понял команду. Возвращаюсь в главное меню.",
-        reply_markup=main_menu_keyboard(user_id)
+        "Не понял команду. Возвращаюсь в главное меню.",
+        reply_markup=main_menu_keyboard(user_id),
     )
     return MAIN_MENU
 
-def build_conversation_handler():
-    """
-    Собираем ConversationHandler.
-    """
-    conv_handler = ConversationHandler(
+# --------------------------------------------------------------------------- #
+# Конструируем ConversationHandler                                             #
+# --------------------------------------------------------------------------- #
+def build_conversation_handler() -> ConversationHandler:
+    return ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
         states={
             MAIN_MENU: [
                 CallbackQueryHandler(main_menu_handler),
-                # Любой текст -> fallback
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
-            ],
-            ADD_EMAIL: [
-                # В ADD_EMAIL читаем текст как почта+пароль
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_email_handler_text),
-                CallbackQueryHandler(add_email_handler_callback, pattern="^(help_email|cancel_add_email|add_email_again)$"),
             ],
             SETTINGS_MENU: [
                 CallbackQueryHandler(settings_menu_handler),
@@ -464,9 +306,5 @@ def build_conversation_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_to_main_menu),
             ],
         },
-        fallbacks=[
-            # Если что-то пошло не так, можно вернуть в MAIN_MENU
-            CommandHandler("start", cmd_start),
-        ],
+        fallbacks=[CommandHandler("start", cmd_start)],
     )
-    return conv_handler
