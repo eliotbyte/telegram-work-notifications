@@ -10,7 +10,9 @@ USER_CONFIG_FILE = os.path.join(DATA_DIR, "user_config.json")
 # Глобальная структура user_configs: {str(user_id): {...}}
 user_configs = {}
 
+
 def load_user_config():
+    """Читаем конфиги пользователей из файла."""
     global user_configs
     if os.path.exists(USER_CONFIG_FILE):
         with open(USER_CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -32,17 +34,30 @@ def load_user_config():
         if "last_check_time" not in cfg:
             cfg["last_check_time"] = datetime.now().isoformat()
 
+
 def save_user_config():
+    """Сохраняем конфиги на диск."""
     global user_configs
     with open(USER_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(user_configs, f, ensure_ascii=False, indent=2)
+
+
+def _refresh():
+    """
+    Перечитать конфиг с диска, чтобы отразить возможные изменения,
+    сделанные другими хэндлерами/тредами (OAuth‑колбэком и т.п.).
+    """
+    load_user_config()
+# ---------------------------------------------------------------------------
+
 
 def ensure_user_config(user_id: int):
     """
     Создаёт заготовку конфига для пользователя, если отсутствует.
     """
-    global user_configs
+    _refresh()  # [FIX]
 
+    global user_configs
     uid_str = str(user_id)
     if uid_str not in user_configs:
         # При создании нового пользователя сразу прописываем,
@@ -74,35 +89,40 @@ def ensure_user_config(user_id: int):
         }
         save_user_config()
 
+
 def set_email_credentials(user_id: int, email_value: str, password: str):
     """
-    Сохранить почту и пароль в конфиг пользователя.
+    Сохранить почту и пароль/токен в конфиг пользователя.
     """
+    ensure_user_config(user_id)          # [_refresh()] уже внутри
     global user_configs
     uid_str = str(user_id)
-    ensure_user_config(user_id)
 
     user_configs[uid_str]["email"]["value"] = email_value
     user_configs[uid_str]["email"]["password"] = password
     save_user_config()
 
+
 def clear_email_credentials(user_id: int):
     """
     Удалить данные почты у пользователя.
     """
+    ensure_user_config(user_id)          # [_refresh()] уже внутри
     global user_configs
     uid_str = str(user_id)
-    ensure_user_config(user_id)
 
     user_configs[uid_str]["email"]["value"] = None
     user_configs[uid_str]["email"]["password"] = None
     save_user_config()
+
 
 def get_email_credentials(user_id: int):
     """
     Получить (email, password, host) для пользователя.
     Вернёт (None, None, None), если не настроено.
     """
+    _refresh()  # [FIX]
+
     global user_configs
     uid_str = str(user_id)
     cfg = user_configs.get(uid_str)
@@ -115,47 +135,53 @@ def get_email_credentials(user_id: int):
         cfg["email"].get("host"),
     )
 
+
 def set_jira_notification(user_id: int, event_type: str, value: bool):
     """
     Установить флаг включения/выключения определённого события Jira.
     """
+    ensure_user_config(user_id)          # [_refresh()] уже внутри
     global user_configs
     uid_str = str(user_id)
-    ensure_user_config(user_id)
 
     if event_type in user_configs[uid_str]["notifications"]["jira"]:
         user_configs[uid_str]["notifications"]["jira"][event_type] = value
         save_user_config()
 
+
 def toggle_mail_notifications(user_id: int):
     """
     Переключить флаг уведомлений по не-Jira письмам.
     """
+    ensure_user_config(user_id)          # [_refresh()] уже внутри
     global user_configs
     uid_str = str(user_id)
-    ensure_user_config(user_id)
 
     current = user_configs[uid_str]["notifications"]["mail"]
     user_configs[uid_str]["notifications"]["mail"] = not current
     save_user_config()
 
+
 def get_notifications_config(user_id: int):
     """
     Получить конфиг уведомлений (jira dict, mail bool).
     """
+    _refresh()  # [FIX]
+
     global user_configs
     uid_str = str(user_id)
-    ensure_user_config(user_id)
+    ensure_user_config(user_id)          # (гарантия, что структура есть)
     return user_configs[uid_str]["notifications"]
+
 
 # [MOD] Функция переключения тихих уведомлений
 def toggle_quiet_notifications(user_id: int):
     """
     Переключить флаг тихих уведомлений вне рабочего времени.
     """
+    ensure_user_config(user_id)          # [_refresh()] уже внутри
     global user_configs
     uid_str = str(user_id)
-    ensure_user_config(user_id)
 
     current = user_configs[uid_str]["notifications"].get("quiet_notifications", True)
     user_configs[uid_str]["notifications"]["quiet_notifications"] = not current

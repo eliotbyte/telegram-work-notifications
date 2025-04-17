@@ -82,7 +82,8 @@ async def yandex_callback(request: Request):
                 data={
                     "chat_id": user_id,
                     "text": f"✅ Почта *{email_value}* подключена! "
-                            "Уведомления о письмах включены.",
+                            "Уведомления о письмах включены. "
+                            "\n\nВведите /start, чтобы перейти к настройкам.",
                     "parse_mode": "Markdown",
                     "disable_web_page_preview": True,
                 },
