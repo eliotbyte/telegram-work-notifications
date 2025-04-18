@@ -7,7 +7,6 @@ from email.parser import BytesParser
 from imapclient import IMAPClient
 
 import config
-from config import save_user_config
 from filters.jira_parser import parse_jira_email
 from telegram.helpers import escape_markdown
 
@@ -22,7 +21,6 @@ async def bookmark_latest_uid(
     """
     • Определяет максимальный UID в INBOX
     • Сохраняет его в конфиг вместе с текущим временем.
-
     Нужна, чтобы при первой авторизации НЕ рассылать старые письма.
     """
 
@@ -35,23 +33,29 @@ async def bookmark_latest_uid(
 
     highest_uid = await asyncio.to_thread(_get_highest_uid)
 
-    cfg = config.user_configs.setdefault(str(user_id), {})
-    cfg["last_uid"] = highest_uid
-    cfg["last_check_time"] = datetime.now().isoformat()
-    save_user_config()
+    config.update_user_fields(
+        user_id,
+        last_uid=highest_uid,
+        last_check_time=datetime.now().isoformat(),
+    )
 
     logging.info(f"[{user_id}] UID‑закладка выполнена ⇒ {highest_uid}")
 
 
-# ───────────────────  Основная проверка почты (без изменений API) ───────────
+# ───────────────────  Основная проверка почты ───────────────────────────────
 async def check_mail_for_all_users(app):
     logging.info("=== Проверка почты для всех пользователей ===")
+
+    # Берём актуальные данные прямо из SQLite
+    all_users = config.get_all_user_configs()
+
     tasks = [
-        asyncio.create_task(check_and_notify(app, int(uid), cfg))
-        for uid, cfg in config.user_configs.items()
+        asyncio.create_task(check_and_notify(app, uid, cfg))
+        for uid, cfg in all_users
     ]
     if tasks:
         await asyncio.gather(*tasks)
+
     logging.info("=== Завершён проход проверки почты ===")
 
 
@@ -119,6 +123,7 @@ async def check_and_notify(app, user_id: int, cfg: dict):
         return not (0 <= msk.weekday() <= 4 and 9 <= msk.hour < 18)
 
     # --- рассылаем уведомления ----------------------------------------------
+    last_processed_uid = last_uid
     for uid, subject, sender, html in new_messages:
         allowed = {k for k, v in cfg["notifications"]["jira"].items() if v}
         jira_msgs = parse_jira_email(subject, html, allowed_event_types=allowed)
@@ -143,8 +148,11 @@ async def check_and_notify(app, user_id: int, cfg: dict):
                     disable_notification=mute,
                 )
 
-        cfg["last_uid"] = uid
-        save_user_config()
+        last_processed_uid = max(last_processed_uid or 0, uid)
 
-    cfg["last_check_time"] = now_dt.isoformat()
-    save_user_config()
+    # --- сохраняем позицию и время ------------------------------------------
+    config.update_user_fields(
+        user_id,
+        last_uid=last_processed_uid,
+        last_check_time=now_dt.isoformat(),
+    )
