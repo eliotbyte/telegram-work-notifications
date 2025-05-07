@@ -55,6 +55,9 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
+    # Добавляем обработчик ошибок
+    app.add_error_handler(lambda u, c: logging.error(f"Ошибка: {c.error}"))
+
     # Регистрируем conversation handler
     conv_handler = build_conversation_handler()
     app.add_handler(conv_handler)
