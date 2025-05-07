@@ -87,6 +87,9 @@ async def check_and_notify(app, user_id: int, cfg: dict):
         cfg.get("last_check_time", now_dt.isoformat())
     )
 
+    if (now_dt - last_check_time) > timedelta(minutes=15):
+        last_check_time = now_dt - timedelta(minutes=15)
+
     since_str = last_check_time.strftime("%d-%b-%Y")
     last_uid = cfg.get("last_uid")
 
@@ -101,6 +104,8 @@ async def check_and_notify(app, user_id: int, cfg: dict):
                     if last_uid and uid <= last_uid:
                         continue
                     data = c.fetch([uid], ["BODY[]", "INTERNALDATE"])[uid]
+                    if data[b"INTERNALDATE"].replace(tzinfo=None) <= last_check_time:
+                        continue
                     raw_data = data[b"BODY[]"]
                     msg = BytesParser(policy=policy.default).parsebytes(raw_data)
                     subject = msg["subject"] or "(без темы)"
@@ -136,10 +141,16 @@ async def check_and_notify(app, user_id: int, cfg: dict):
 
     logging.info(f"[{user_id}] Найдено {len(new_messages)} новых писем")
 
+    # --- «тихие часы» --------------------------------------------------------
+    def quiet_time() -> bool:
+        msk = datetime.utcnow() + timedelta(hours=3)
+        return not (0 <= msk.weekday() <= 4 and 9 <= msk.hour < 18)
+
     # --- рассылаем уведомления ----------------------------------------------
     last_processed_uid = last_uid
     for uid, subject, sender, html in new_messages:
         allowed = {k for k, v in cfg["notifications"]["jira"].items() if v}
+        mute = cfg["notifications"].get("quiet_notifications", True) and quiet_time()
         jira_result = parse_jira_email(html)
 
         if jira_result is None:
@@ -147,8 +158,14 @@ async def check_and_notify(app, user_id: int, cfg: dict):
                 logging.info(f"[{user_id}] Пропускаем письмо от {sender}: у пользователя отключены email уведомления")
                 continue
 
-            msg_text = f"📩 Письмо от {sender}\nТема: {subject}"
-            logging.info(f"[{user_id}] [ЗАГЛУШКА] Отправка уведомления: {msg_text}")
+            msg_text = f"📩 Письмо от {escape_markdown(sender)}\n*Тема:* {escape_markdown(subject)}"
+            await app.bot.send_message(
+                user_id,
+                msg_text,
+                parse_mode="Markdown",
+                disable_notification=mute,
+            )
+            logging.info(f"[{user_id}] Отправлено уведомление о письме от {sender} (тихий режим: {mute})")
         else:
             # Собираем все события из author_events
             all_events = []
@@ -205,7 +222,14 @@ async def check_and_notify(app, user_id: int, cfg: dict):
                         msg_lines.append("⏱️ трекнул(а) время")
 
             msg_text = "\n".join(msg_lines)
-            logging.info(f"[{user_id}] [ЗАГЛУШКА] Отправка Jira уведомления: {msg_text}")
+            await app.bot.send_message(
+                user_id,
+                msg_text,
+                parse_mode="HTML",
+                disable_notification=mute,
+            )
+            logging.info(f"[{user_id}] Отправлено Jira уведомление (тихий режим: {mute})")
+
 
         last_processed_uid = max(last_processed_uid or 0, uid)
 
