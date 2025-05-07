@@ -59,6 +59,18 @@ async def check_mail_for_all_users(app):
     logging.info("=== Завершён проход проверки почты ===")
 
 
+async def retry_imap_connect(func, max_retries=3, delay=5):
+    """Повторяет попытку подключения к IMAP с задержкой."""
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(func)
+        except Exception as e:
+            if attempt == max_retries - 1:  # последняя попытка
+                raise
+            logging.warning(f"Попытка {attempt + 1}/{max_retries} не удалась: {e}")
+            await asyncio.sleep(delay)
+
+
 async def check_and_notify(app, user_id: int, cfg: dict):
     email_value = cfg["email"]["value"]
     token = cfg["email"]["password"]
@@ -115,7 +127,11 @@ async def check_and_notify(app, user_id: int, cfg: dict):
             logging.error(f"[{user_id}] IMAP/XOAUTH2 ошибка: {e}")
         return res
 
-    new_messages = await asyncio.to_thread(fetch_new)
+    try:
+        new_messages = await retry_imap_connect(fetch_new)
+    except Exception as e:
+        logging.error(f"[{user_id}] Все попытки подключения к IMAP не удались: {e}")
+        return
 
     # --- «тихие часы» --------------------------------------------------------
     def quiet_time() -> bool:
