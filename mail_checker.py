@@ -76,6 +76,7 @@ async def check_and_notify(app, user_id: int, cfg: dict):
     token = cfg["email"]["password"]
     host = cfg["email"]["host"]
     if not email_value or not token:
+        logging.info(f"[{user_id}] Пропускаем проверку: отсутствуют учетные данные почты")
         return
 
     logging.info(f"[{user_id}] Проверяем почту {email_value}")
@@ -133,6 +134,12 @@ async def check_and_notify(app, user_id: int, cfg: dict):
         logging.error(f"[{user_id}] Все попытки подключения к IMAP не удались: {e}")
         return
 
+    if not new_messages:
+        logging.info(f"[{user_id}] Новые письма не найдены")
+        return
+
+    logging.info(f"[{user_id}] Найдено {len(new_messages)} новых писем")
+
     # --- «тихие часы» --------------------------------------------------------
     def quiet_time() -> bool:
         msk = datetime.utcnow() + timedelta(hours=3)
@@ -147,15 +154,23 @@ async def check_and_notify(app, user_id: int, cfg: dict):
         mute = cfg["notifications"].get("quiet_notifications", True) and quiet_time()
 
         if jira_msgs is None:
-            if cfg["notifications"]["mail"]:
-                await app.bot.send_message(
-                    user_id,
-                    f"📩 Письмо от {escape_markdown(sender)}\n"
-                    f"*Тема:* {escape_markdown(subject)}",
-                    parse_mode="Markdown",
-                    disable_notification=mute,
-                )
+            if not cfg["notifications"]["mail"]:
+                logging.info(f"[{user_id}] Пропускаем письмо от {sender}: у пользователя отключены email уведомления")
+                continue
+
+            await app.bot.send_message(
+                user_id,
+                f"📩 Письмо от {escape_markdown(sender)}\n"
+                f"*Тема:* {escape_markdown(subject)}",
+                parse_mode="Markdown",
+                disable_notification=mute,
+            )
+            logging.info(f"[{user_id}] Отправлено уведомление о письме от {sender} (тихий режим: {mute})")
         else:
+            if not jira_msgs:
+                logging.info(f"[{user_id}] Пропускаем Jira письмо: парсер не нашел интересующих событий")
+                continue
+
             for txt in jira_msgs:
                 await app.bot.send_message(
                     user_id,
@@ -163,6 +178,7 @@ async def check_and_notify(app, user_id: int, cfg: dict):
                     parse_mode="HTML",
                     disable_notification=mute,
                 )
+                logging.info(f"[{user_id}] Отправлено Jira уведомление (тихий режим: {mute})")
 
         last_processed_uid = max(last_processed_uid or 0, uid)
 
@@ -172,3 +188,4 @@ async def check_and_notify(app, user_id: int, cfg: dict):
         last_uid=last_processed_uid,
         last_check_time=now_dt.isoformat(),
     )
+    logging.info(f"[{user_id}] Обновлена позиция последнего письма: {last_processed_uid}")
