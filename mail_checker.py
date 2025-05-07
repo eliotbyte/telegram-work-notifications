@@ -86,8 +86,6 @@ async def check_and_notify(app, user_id: int, cfg: dict):
     last_check_time = datetime.fromisoformat(
         cfg.get("last_check_time", now_dt.isoformat())
     )
-    if (now_dt - last_check_time) > timedelta(minutes=15):
-        last_check_time = now_dt - timedelta(minutes=15)
 
     since_str = last_check_time.strftime("%d-%b-%Y")
     last_uid = cfg.get("last_uid")
@@ -103,8 +101,6 @@ async def check_and_notify(app, user_id: int, cfg: dict):
                     if last_uid and uid <= last_uid:
                         continue
                     data = c.fetch([uid], ["BODY[]", "INTERNALDATE"])[uid]
-                    if data[b"INTERNALDATE"].replace(tzinfo=None) <= last_check_time:
-                        continue
                     raw_data = data[b"BODY[]"]
                     msg = BytesParser(policy=policy.default).parsebytes(raw_data)
                     subject = msg["subject"] or "(без темы)"
@@ -140,45 +136,76 @@ async def check_and_notify(app, user_id: int, cfg: dict):
 
     logging.info(f"[{user_id}] Найдено {len(new_messages)} новых писем")
 
-    # --- «тихие часы» --------------------------------------------------------
-    def quiet_time() -> bool:
-        msk = datetime.utcnow() + timedelta(hours=3)
-        return not (0 <= msk.weekday() <= 4 and 9 <= msk.hour < 18)
-
     # --- рассылаем уведомления ----------------------------------------------
     last_processed_uid = last_uid
     for uid, subject, sender, html in new_messages:
         allowed = {k for k, v in cfg["notifications"]["jira"].items() if v}
-        jira_msgs = parse_jira_email(subject, html, allowed_event_types=allowed)
+        jira_result = parse_jira_email(html)
 
-        mute = cfg["notifications"].get("quiet_notifications", True) and quiet_time()
-
-        if jira_msgs is None:
+        if jira_result is None:
             if not cfg["notifications"]["mail"]:
                 logging.info(f"[{user_id}] Пропускаем письмо от {sender}: у пользователя отключены email уведомления")
                 continue
 
-            await app.bot.send_message(
-                user_id,
-                f"📩 Письмо от {escape_markdown(sender)}\n"
-                f"*Тема:* {escape_markdown(subject)}",
-                parse_mode="Markdown",
-                disable_notification=mute,
-            )
-            logging.info(f"[{user_id}] Отправлено уведомление о письме от {sender} (тихий режим: {mute})")
+            msg_text = f"📩 Письмо от {sender}\nТема: {subject}"
+            logging.info(f"[{user_id}] [ЗАГЛУШКА] Отправка уведомления: {msg_text}")
         else:
-            if not jira_msgs:
+            # Собираем все события из author_events
+            all_events = []
+            for author, events in jira_result['author_events'].items():
+                for event in events:
+                    event['author'] = author
+                    all_events.append(event)
+            
+            # Фильтруем события по allowed
+            filtered_events = [e for e in all_events if e['type'] in allowed]
+            if not filtered_events:
                 logging.info(f"[{user_id}] Пропускаем Jira письмо: парсер не нашел интересующих событий")
                 continue
 
-            for txt in jira_msgs:
-                await app.bot.send_message(
-                    user_id,
-                    txt,
-                    parse_mode="HTML",
-                    disable_notification=mute,
-                )
-                logging.info(f"[{user_id}] Отправлено Jira уведомление (тихий режим: {mute})")
+            # Заменяем None авторов
+            valid_authors = [e['author'] for e in filtered_events if e['author'] is not None]
+            default_author = valid_authors[0] if valid_authors else "Кто-то"
+            for event in filtered_events:
+                if event['author'] is None:
+                    event['author'] = default_author
+
+            # Группируем события по автору
+            events_by_author = {}
+            for event in filtered_events:
+                author = event['author']
+                if author not in events_by_author:
+                    events_by_author[author] = []
+                events_by_author[author].append(event)
+
+            # Формируем сообщение
+            task_info = f"[{jira_result['task_key']}] {jira_result['task_summary']}"
+            if jira_result['task_url']:
+                task_info = f'<a href="{jira_result["task_url"]}">{task_info}</a>'
+            msg_lines = [task_info, ""]
+
+            for author, events in events_by_author.items():
+                msg_lines.append(f"{author}:")
+                for event in events:
+                    event_type = event['type']
+
+                    if event_type == "assigned":
+                        msg_lines.append("✅ назначил(а) вас исполнителем задачи")
+                    elif event_type == "created":
+                        msg_lines.append("📌 создал(а) задачу")
+                    elif event_type == "update":
+                        msg_lines.append("✏️ внес(ла) изменения")
+                    elif event_type == "comment":
+                        msg_lines.append("💬 оставил(а) комментарий")
+                    elif event_type == "mention_description":
+                        msg_lines.append("👀 упомянул(а) вас в задаче")
+                    elif event_type == "mention_comment":
+                        msg_lines.append("👀 упомянул(а) вас в комментариях")
+                    elif event_type == "worklog":
+                        msg_lines.append("⏱️ трекнул(а) время")
+
+            msg_text = "\n".join(msg_lines)
+            logging.info(f"[{user_id}] [ЗАГЛУШКА] Отправка Jira уведомления: {msg_text}")
 
         last_processed_uid = max(last_processed_uid or 0, uid)
 
