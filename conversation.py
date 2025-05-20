@@ -112,7 +112,7 @@ def jira_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # Хэндлеры меню                                                                #
 # --------------------------------------------------------------------------- #
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start — приветствие и главное меню."""
+    """Команда /start — приветствие и главное меню."""
     user_id = update.effective_user.id
     ensure_user_config(user_id)
 
@@ -130,7 +130,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # «Добавить почту» → выдаём ссылку OAuth
+    # «Добавить почту» → выдаём ссылку OAuth
     if data == "add_email":
         params = {
             "response_type": "code",
@@ -142,14 +142,14 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         auth_link = f"https://oauth.yandex.ru/authorize?{urlencode(params)}"
         keyboard = InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Авторизоваться через Яндекс", url=auth_link)],
+                [InlineKeyboardButton("Авторизоваться через Яндекс", url=auth_link)],
                 [InlineKeyboardButton("Назад", callback_data="back_to_main")],
             ]
         )
         await query.edit_message_text(
             (
-                "⚡ *Шаг 1.* Нажмите кнопку ниже и перейдите по ссылке.\n"
-                "⚡ *Шаг 2.* Авторизуйтесь на сайте и вернитесь в чат."
+                "⚡ *Шаг 1.* Нажмите кнопку ниже и перейдите по ссылке.\n"
+                "⚡ *Шаг 2.* Авторизуйтесь на сайте и вернитесь в чат."
             ),
             parse_mode="Markdown",
             reply_markup=keyboard,
@@ -286,7 +286,7 @@ async def jira_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def fallback_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await update.message.reply_text(
-        "Не понял команду. Возвращаюсь в главное меню.",
+        "Не понял команду. Возвращаюсь в главное меню.",
         reply_markup=main_menu_keyboard(user_id),
     )
     return MAIN_MENU
@@ -320,4 +320,5 @@ def build_conversation_handler() -> ConversationHandler:
             ],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
+        per_message=True,
     )
