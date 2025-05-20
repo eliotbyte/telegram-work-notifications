@@ -320,5 +320,6 @@ def build_conversation_handler() -> ConversationHandler:
             ],
         },
         fallbacks=[CommandHandler("start", cmd_start)],
-        per_message=True,
+        per_message=False,
+        per_chat=True,
     )
