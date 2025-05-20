@@ -15,6 +15,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
+MAX_INSTANCES = int(os.getenv("MAX_INSTANCES", "1"))
 
 LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO")
 LOG_LEVEL = logging._nameToLevel.get(LOG_LEVEL_NAME.upper(), logging.INFO)
@@ -45,7 +46,8 @@ async def post_init(application):
         scheduled_mail_check,
         trigger='interval',
         seconds=CHECK_INTERVAL,
-        kwargs={"app": application}
+        kwargs={"app": application},
+        max_instances=MAX_INSTANCES
     )
     scheduler.start()
     logging.info("✅ Планировщик запущен")
